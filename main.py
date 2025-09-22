@@ -1,9 +1,8 @@
-def foo(x):
-    a = 1
-    print("69\n")
-
+def _print(x):
+    print(str(x))
 
 def main():
-    a = "Hello\n"
-    foo(a)
-    print(a)
+    a = 1
+    _print(a)
+    a = "Hello!\n"
+    _print(a)

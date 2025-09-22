@@ -8,7 +8,7 @@ from types import CodeType
 
 import more_itertools
 
-DEBUG = True
+DEBUG = False
 
 
 class BuiltinTypesEnum(Enum):
@@ -16,7 +16,7 @@ class BuiltinTypesEnum(Enum):
 
     NONE = auto()
     INT = auto()
-    STRING = auto()
+    STR = auto()
 
     FUNCTION = auto()
     NEXT_FUNCTION = auto()
@@ -58,13 +58,13 @@ int_obj_fields: dict[str, Type] = {
         BuiltinTypesEnum.FUNCTION, payload=Type.from_builtin(BuiltinTypesEnum.INT)
     ),
     "__str__": Type.from_builtin(
-        BuiltinTypesEnum.FUNCTION, payload=Type.from_builtin(BuiltinTypesEnum.STRING)
+        BuiltinTypesEnum.FUNCTION, payload=Type.from_builtin(BuiltinTypesEnum.STR)
     ),
 }
 
 string_obj_fields: dict[str, Type] = {
     "__str__": Type.from_builtin(
-        BuiltinTypesEnum.FUNCTION, payload=Type.from_builtin(BuiltinTypesEnum.STRING)
+        BuiltinTypesEnum.FUNCTION, payload=Type.from_builtin(BuiltinTypesEnum.STR)
     )
 }
 
@@ -76,7 +76,7 @@ args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 builtin_functions: dict[str, Type] = {
     "print": Type.from_builtin(BuiltinTypesEnum.NONE),
     "print_string": Type.from_builtin(BuiltinTypesEnum.NONE),
-    "int__str__": Type.from_builtin(BuiltinTypesEnum.STRING),
+    "str": Type.from_builtin(BuiltinTypesEnum.STR),
 }
 
 
@@ -125,7 +125,7 @@ class Compiler:
                             )
                         case str():
                             types_stacks[-1].append(
-                                Type.from_builtin(BuiltinTypesEnum.STRING)
+                                Type.from_builtin(BuiltinTypesEnum.STR)
                             )
                         case int():
                             types_stacks[-1].append(
@@ -195,10 +195,9 @@ class Compiler:
         f = self.output_file
         f.write("BITS 64\n")
         f.write("default rel\n")
-        f.write("extern print_int\n")
-        f.write("extern print_string\n")
         f.write("extern print\n")
         f.write("extern int__str__\n")
+        f.write("extern str__str__\n")
 
         f.write("section .text\n")
 
@@ -225,7 +224,9 @@ class Compiler:
                 dis.show_code(code)
 
             name = self.compile_code(code, types)
-            f.write(self.codes_asm[name])
+
+        for name, asm in self.codes_asm.items():
+            f.write(asm)
 
         f.write("section .data\n")
 
@@ -319,7 +320,7 @@ class Compiler:
                                     f"    lea rax, [{function_base_name}_CONST_STRING{inst.arg}]\n"
                                 )
                                 types_stacks[-1].append(
-                                    Type.from_builtin(BuiltinTypesEnum.STRING)
+                                    Type.from_builtin(BuiltinTypesEnum.STR)
                                 )
                             case int():
                                 f.write(
@@ -342,25 +343,36 @@ class Compiler:
                         for i in temp:
                             if i.offset == inst.offset:
                                 break
-                        if code_obj.co_names[inst.arg // 2] in self.functions.keys():
-                            function_arg_types = self._get_function_future_types(
-                                code_obj, temp, variables_types
-                            )
-                        else:
-                            function_arg_types = []
+
+                        function_arg_types = self._get_function_future_types(
+                            code_obj, temp, variables_types
+                        )
+
+                        return_type = Type.from_builtin(BuiltinTypesEnum.UNKNOWN)
+
+                        match code_obj.co_names[inst.arg // 2]:
+                            case "str":
+                                return_type = Type.from_builtin(BuiltinTypesEnum.STR)
+                                _function_name = (
+                                    function_arg_types[0].name.lower() + "__str__"
+                                )
+                            case "print":
+                                return_type = Type.from_builtin(BuiltinTypesEnum.NONE)
+                                _function_name = "print"
+                            case _:
+                                _function_name = self._generate_function_name(
+                                    code_obj.co_names[inst.arg // 2], function_arg_types
+                                )
                         types_stacks[-1].append(
                             Type.from_builtin(
                                 BuiltinTypesEnum.FUNCTION,
                                 payload=builtin_functions.get(
                                     inst.argval,
-                                    Type.from_builtin(BuiltinTypesEnum.UNKNOWN),
+                                    return_type,
                                 ),
                                 function_name=code_obj.co_names[inst.arg // 2],
                                 function_arg_types=function_arg_types,
                             )
-                        )
-                        _function_name = self._generate_function_name(
-                            code_obj.co_names[inst.arg // 2], function_arg_types
                         )
                         f.write(f"    lea rax, {_function_name}\n")
                         f.write("    push rax\n")

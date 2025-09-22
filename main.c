@@ -23,13 +23,17 @@ typedef struct {
 
 typedef struct {
     char* value
-} StringObj;
+} StrObj;
 
-StringObj *int__str__(IntObj *self) {
-    StringObj *result = malloc(sizeof(StringObj));
+StrObj *int__str__(IntObj *self) {
+    StrObj *result = malloc(sizeof(StrObj));
     result->value = (char *)malloc(128);
     sprintf(result->value, "%zu\n", 69);
     return result;
+}
+
+StrObj *str__str__(StrObj *self) {
+    return self;
 }
 
 void *print(void *string) {

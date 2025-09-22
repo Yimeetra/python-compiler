@@ -8,7 +8,7 @@ from types import CodeType
 
 import more_itertools
 
-DEBUG = False
+DEBUG = True
 
 
 class BuiltinTypesEnum(Enum):
@@ -158,6 +158,7 @@ class Compiler:
                     for i in range(inst.arg):
                         arg_types.append(types_stacks[-1].pop())
                     if len(types_stacks[-1]) == 0:
+                        arg_types.reverse()
                         return arg_types
                     function_type = types_stacks[-1].pop()
                     _function_name = self._generate_function_name(
@@ -415,6 +416,7 @@ class Compiler:
                         arg_types: list[Type] = []
                         for i in range(inst.arg):
                             arg_types.append(types_stacks[-1].pop())
+                        arg_types.reverse()
                         function_type = types_stacks[-1].pop()
                         _function_name = self._generate_function_name(
                             function_type.function_name, arg_types

@@ -5,7 +5,7 @@ main_c.o: main_asm.o
 	gcc -c main.c -o main_c.o -g
 
 main: main_asm.o main_c.o
-	gcc -o main main_asm.o main_c.o
+	gcc -o main main_asm.o main_c.o -lm
 
 main.asm:
 	python3 compiler.py

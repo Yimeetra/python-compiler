@@ -1,8 +1,10 @@
-def _print(x):
-    print(str(x))
+def print(x):
+    _print(str(x))
+    _print("\n")
 
 def main():
-    a = 1
-    _print(a)
-    a = "Hello!\n"
-    _print(a)
+    a = "Hello, world"
+
+    print(a)
+
+main()

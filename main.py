@@ -1,13 +1,15 @@
-def print(x):
-    _print(str(x))
-    _print("\n")
-
+if __name__ != "__main__":
+    def print(x):
+        _print(str(x))
+        _print("\n")
 
 def main():
-    a = 100
-    b = 4
+    a = 0
 
-    print("Hello, " + str(a * b + 20))
+    while 1:
+        print("id = " + str(id(a)))
+        a += 1
 
+    print(a)
 
 main()

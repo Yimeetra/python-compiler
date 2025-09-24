@@ -3,12 +3,20 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
+#include "int.h"
 
 extern void * None;
 
 void *_print(void *string) {
     printf("%s", *(char **)string);
     return &None;
+}
+
+IntObj *id(void *value) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = value;
+    return result;
 }
 
 // "__add__"

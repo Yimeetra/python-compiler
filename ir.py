@@ -12,16 +12,27 @@ class SourceType(Enum):
 
 class Operation(Enum):
     ASSIGN = auto()
+
     ARG = auto()
     CALL = auto()
+
     GOTO_IF_FALSE = auto()
     GOTO = auto()
-    RETURN = auto()
     LABEL = auto()
+
+    RETURN = auto()
+
     ADD = auto()
     SUB = auto()
     MUL = auto()
     DIV = auto()
+
+    LT = auto()
+    GT = auto()
+    LE = auto()
+    GE = auto()
+    EQ = auto()
+    NE = auto()
 
 
 class Source:

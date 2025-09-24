@@ -6,6 +6,7 @@ from enum import Enum, auto
 
 class BuiltinTypesEnum(Enum):
     unknown = auto()
+    any = auto()
 
     none = auto()
     int = auto()

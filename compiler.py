@@ -15,9 +15,11 @@ DEBUG = True
 
 def type_has_method(type: Type, method: str) -> bool:
     methods = type_methods.get(type)
-    if methods.get(method):
-        return True
-    return False
+    if not methods:
+        return False
+    if not methods.get(method):
+        return False
+    return True
 
 
 args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
@@ -36,7 +38,7 @@ class Function:
 
     def validate_args(self, input_arg_types: tuple[Type]) -> bool:
         for i, j in zip(self.arg_types, input_arg_types):
-            if i.name != j.name:
+            if i.name != j.name and not i.name == BuiltinTypesEnum.any.name:
                 return False
         return True
 
@@ -73,8 +75,14 @@ builtin_functions: dict[str, Function] = {
     "str": (
         BuiltInMethodMapFunction("str", (), (Type.from_builtin(BuiltinTypesEnum.str)))
     ),
+    "id": (
+        BuiltInFunction(
+            "id",
+            (Type.from_builtin(BuiltinTypesEnum.any),),
+            Type.from_builtin(BuiltinTypesEnum.int),
+        )
+    ),
 }
-
 
 def binop_function(name: str, arg1: Type, arg2: Type, return_type: Type) -> Type:
     return BuiltInMethod(name, (arg1, arg2), return_type)
@@ -105,6 +113,44 @@ int_methods: dict[str, Function] = {
         Type.from_builtin(BuiltinTypesEnum.int),
         Type.from_builtin(BuiltinTypesEnum.int),
     ),
+
+    "__lt__": binop_function(
+        "__lt__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__gt__": binop_function(
+        "__gt__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__le__": binop_function(
+        "__le__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__ge__": binop_function(
+        "__ge__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__eq__": binop_function(
+        "__eq__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__ne__": binop_function(
+        "__ne__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+
     "__str__": BuiltInMethod(
         "__str__",
         (Type.from_builtin(BuiltinTypesEnum.int),),
@@ -134,6 +180,7 @@ type_methods: dict[Type, dict[str, Function]] = {
 obj_name_to_type: dict[str, Type] = {
     "int": Type.from_builtin(BuiltinTypesEnum.int),
     "str": Type.from_builtin(BuiltinTypesEnum.str),
+    "NoneType": Type.from_builtin(BuiltinTypesEnum.none),
 }
 
 op_str_to_op_type: dict[str, Operation] = {
@@ -141,6 +188,13 @@ op_str_to_op_type: dict[str, Operation] = {
     "-": Operation.SUB,
     "*": Operation.MUL,
     "/": Operation.DIV,
+
+    "<": Operation.LT,
+    ">": Operation.GT,
+    "<=": Operation.LE,
+    ">=": Operation.GE,
+    "==": Operation.EQ,
+    "!=": Operation.NE,
 }
 
 op_type_to_method: dict[Operation, str] = {
@@ -148,6 +202,13 @@ op_type_to_method: dict[Operation, str] = {
     Operation.SUB: "__sub__",
     Operation.MUL: "__mul__",
     Operation.DIV: "__div__",
+
+    Operation.LT: "__lt__",
+    Operation.GT: "__gt__",
+    Operation.LE: "__le__",
+    Operation.GE: "__ge__",
+    Operation.EQ: "__eq__",
+    Operation.NE: "__ne__",
 }
 
 
@@ -201,7 +262,8 @@ class Compiler:
         self._label_generator = self._get_next_label()
         self.output_file = open(output_file_name, "w+")
         self.codes_asm: dict[str, str] = {}
-        self.functions: dict[str, CodeType] = {}
+        self.local_code_objs: dict[str, CodeType] = {}
+        self.compiled_functions: dict[str, Function] = {}
 
     def __del__(self):
         self.output_file.close()
@@ -211,6 +273,13 @@ class Compiler:
         while 1:
             yield f".L{i}"
             i += 1
+    
+    @property
+    def all_functions(self) -> dict[str, Function]:
+        functions = {}
+        functions.update(builtin_functions)
+        functions.update(self.compiled_functions)
+        return functions
 
     def generate_constants(self, code_obj: CodeType):
         f = io.StringIO()
@@ -253,7 +322,7 @@ class Compiler:
             if label:
                 output.append(
                     ThreeAddressCode(
-                        Operation.LABEL.name, Source(SourceType.LABEL, label)
+                        Operation.LABEL, Source(SourceType.LABEL, label)
                     )
                 )
             match inst.opname:
@@ -338,10 +407,18 @@ class Compiler:
                 case "RETURN_CONST":
                     output.append(
                         ThreeAddressCode(
-                            Operation.RETURN, Source(SourceType.CONST, inst.argval)
+                            Operation.RETURN, Source(SourceType.CONST, inst.arg)
+                        )
+                    )
+                case "RETURN_VALUE":
+                    output.append(
+                        ThreeAddressCode(
+                            Operation.RETURN, Source(stack.pop(), inst.arg)
                         )
                     )
                 case "RESUME":
+                    pass
+                case "NOP":
                     pass
                 case _:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
@@ -352,14 +429,10 @@ class Compiler:
         f.write("BITS 64\n")
         f.write("default rel\n")
         f.write("extern _print\n")
+        f.write("extern id\n")
         for type, methods in type_methods.items():
             for method_name, method in methods.items():
                 f.write(f"extern {type.name}{method.generate_function_name()}\n")
-
-        f.write("extern int__str__\n")
-        f.write("extern str__str__\n")
-        f.write("extern int__add__\n")
-        f.write("extern str__add__\n")
 
         f.write("section .text\n")
 
@@ -369,7 +442,7 @@ class Compiler:
         for code in [
             const for const in code_obj.co_consts if isinstance(const, CodeType)
         ]:
-            self.functions[code.co_name] = code
+            self.local_code_objs[code.co_name] = code
 
         self.code_to_compile: list[tuple[CodeType, list[Type]]] = []
         self.code_to_compile.append(
@@ -504,7 +577,7 @@ class Compiler:
                         and call_function_name not in self.codes_asm.keys()
                     ):
                         self.code_to_compile.append(
-                            (self.functions[inst.arg1.value], last_arg_types)
+                            (self.local_code_objs[inst.arg1.value], last_arg_types)
                         )
 
                     last_arg_types = []
@@ -516,18 +589,31 @@ class Compiler:
                     else:
                         temp_type = func.return_type
                 case Operation.GOTO:
-                    raise Exception("Unimplemented")
+                    f.write(f"    jmp .{inst.dest.value}\n")
                 case Operation.GOTO_IF_FALSE:
-                    raise Exception("Unimplemented")
+                    f.write(emit_source_to_reg(inst.arg1, code_obj))
+                    f.write("    mov rax, [rax]\n")
+                    f.write("    test rax, rax\n")
+                    f.write(f"    jz .{inst.dest.value}\n")
                 case Operation.RETURN:
-                    # TODO
+                    f.write(emit_source_to_reg(inst.arg1, code_obj))
+
                     f.write(f"    add rsp, {len(code_obj.co_varnames) * 8}\n")
                     f.write("    pop rbx\n")
                     f.write("    pop rbp\n")
                     f.write("    ret\n")
                 case Operation.LABEL:
-                    raise Exception("Unimplemented")
-                case Operation.ADD | Operation.SUB | Operation.MUL | Operation.DIV:
+                    f.write(f".{inst.arg1.value}:\n")
+                case (Operation.ADD 
+                    | Operation.SUB
+                    | Operation.MUL
+                    | Operation.DIV
+                    | Operation.LT
+                    | Operation.GT
+                    | Operation.LE
+                    | Operation.GE
+                    | Operation.EQ
+                    | Operation.NE):
                     method = op_type_to_method[inst.op]
 
                     arg1_type = get_type_of_source(

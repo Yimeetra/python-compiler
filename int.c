@@ -1,4 +1,7 @@
 #include "int.h"
+#include <stdlib.h>
+
+extern void * None;
 
 StrObj *int__str__(IntObj *self) {
     StrObj *result = malloc(sizeof(StrObj));
@@ -30,4 +33,45 @@ IntObj *int__div__(IntObj *self, IntObj *other) {
     IntObj *result = malloc(sizeof(IntObj));
     result->value = self->value / other->value;
     return result;
+}
+
+IntObj *int__lt__(IntObj *self, IntObj *other) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = self->value < other->value;
+    return result;
+}
+
+IntObj *int__gt__(IntObj *self, IntObj *other) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = self->value > other->value;
+    return result;
+}
+
+IntObj *int__le__(IntObj *self, IntObj *other) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = self->value <= other->value;
+    return result;
+}
+
+IntObj *int__ge__(IntObj *self, IntObj *other) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = self->value >= other->value;
+    return result;
+}
+
+IntObj *int__eq__(IntObj *self, IntObj *other) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = self->value == other->value;
+    return result;
+}
+
+IntObj *int__ne__(IntObj *self, IntObj *other) {
+    IntObj *result = malloc(sizeof(IntObj));
+    result->value = self->value != other->value;
+    return result;
+}
+
+void *int__del__(IntObj *self) {
+    free(self);
+    return &None;
 }

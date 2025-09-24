@@ -28,7 +28,7 @@ class Source:
     def __init__(self, type: SourceType, value: str = ""):
         self.type = type
         self.value = value
-    
+
     def __repr__(self) -> str:
         return f"{self.type.name}({self.value})"
 
@@ -51,10 +51,10 @@ class ThreeAddressCode:
             case Operation.GOTO:
                 return f"goto {self.dest}"
             case Operation.GOTO_IF_FALSE:
-                return f"if not {self.arg1} goto {self.dest}"     
+                return f"if not {self.arg1} goto {self.dest}"
             case Operation.RETURN:
                 return f"ret {self.arg1}"
             case Operation.LABEL:
-                return f"{self.arg1}: "       
+                return f"{self.arg1}: "
             case _:
                 return f"{self.dest} := {self.arg1} {self.op} {self.arg2}"

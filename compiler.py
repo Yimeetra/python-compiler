@@ -2,136 +2,122 @@ from __future__ import annotations
 
 import dis
 import io
-from dataclasses import dataclass, field
-from enum import Enum, auto
 from types import CodeType
 
 import more_itertools
 import itertools
 
+from ir import ThreeAddressCode, Operation, SourceType, Source
+from type import Type, BuiltinTypesEnum
+
 DEBUG = True
 
+def type_has_method(type: Type, method: str) -> bool:
+    methods = type_methods.get(type)
+    if methods.get(method):
+        return True
+    return False
 
-class SourceType(Enum):
-    CONST = auto()
-    LOCAL = auto()
-    GLOBAL = auto()
-    TEMP = auto()
-    LABEL = auto()
+args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 
+class Function:
+    def __init__(self, base_name: str, arg_types: tuple[Type], return_type: Type) -> None:
+        self.base_name = base_name
+        self.arg_types = arg_types
+        self.return_type = return_type
 
-class Operation(Enum):
-    ASSIGN = auto()
-    ARG = auto()
-    CALL = auto()
-    GOTO_IF_FALSE = auto()
-    GOTO = auto()
-    RETURN = auto()
-    LABEL = auto()
-    ADD = auto()
-
-
-class Source:
-    def __init__(self, type: SourceType, value: str = ""):
-        self.type = type
-        self.value = value
+    def generate_function_name(self) -> str:
+        return "_".join([self.base_name] + [type.name for type in self.arg_types])
     
-    def __repr__(self) -> str:
-        return f"{self.type.name}({self.value})"
+    def validate_args(self, input_arg_types: tuple[Type]) -> bool:        
+        for i, j in zip(self.arg_types, input_arg_types):
+            if i.name != j.name:
+                return False
+        return True
 
+class BuiltInFunction(Function):
+    def generate_function_name(self) -> str:
+        return self.base_name
+    
+class BuiltInMethodMapFunction(Function):
+    def generate_function_name(self) -> str:
+        return f"{self.arg_types[0].name}__{self.base_name}__"
+    
+    def validate_args(self, input_arg_types) -> bool:
+        if type_has_method(input_arg_types[0], f"__{self.base_name}__"):
+            self.arg_types = input_arg_types
+            return True
+        return False
+    
+class BuiltInMethod(Function):
+    def generate_function_name(self) -> str:
+        return self.base_name
 
-@dataclass
-class ThreeAddressCode:
-    op: Operation
-    arg1: Source
-    arg2: Source | None = None
-    dest: Source | None = None
-
-    def __repr__(self):
-        match self.op:
-            case Operation.ASSIGN.name:
-                return f"{self.dest} := {self.arg1}"
-            case Operation.ARG.name:
-                return f"arg {self.arg1}"
-            case Operation.CALL.name:
-                return f"{self.dest} := call {self.arg1}"
-            case Operation.GOTO.name:
-                return f"goto {self.dest}"
-            case Operation.GOTO_IF_FALSE.name:
-                return f"if not {self.arg1} goto {self.dest}"     
-            case Operation.RETURN.name:
-                return f"ret {self.arg1}"
-            case Operation.LABEL.name:
-                return f"{self.arg1}: "       
-            case _:
-                return f"{self.dest} := {self.arg1} {self.op} {self.arg2}"
-
-
-class BuiltinTypesEnum(Enum):
-    unknown = auto()
-
-    none = auto()
-    int = auto()
-    str = auto()
-
-    function = auto()
-
-
-@dataclass(unsafe_hash=True)
-class Type:
-    name: str
-    payload: Type | None = None
-    function_name: str | None = None
-    function_arg_types: tuple[Type] = field(default_factory=tuple)
-
-    @staticmethod
-    def from_builtin(builtin: BuiltinTypesEnum, **params) -> Type:
-        return Type(builtin.name, **params)
-
-
-def binop_function_type(arg1: Type, arg2: Type, return_type: Type) -> Type:
-    return Type.from_builtin(
-        BuiltinTypesEnum.function,
-        payload=return_type,
-        function_arg_types=(
-            arg1,
-            arg2
+builtin_functions: dict[str, Function] = {
+    "_print": (
+        BuiltInFunction(
+            "_print",
+            (Type.from_builtin(BuiltinTypesEnum.str),),
+            Type.from_builtin(BuiltinTypesEnum.none)
         )
-    )
+    ),
+    "str": (
+        BuiltInMethodMapFunction("str", (), (Type.from_builtin(BuiltinTypesEnum.str)))
+    ),
+}
 
-int_methods: dict[str, Type] = {
-    "__add__": binop_function_type(
+def binop_function(name: str, arg1: Type, arg2: Type, return_type: Type) -> Type:
+    return BuiltInMethod(name, (arg1, arg2), return_type)
+
+int_methods: dict[str, Function] = {
+    "__add__": binop_function(
+        "__add__",
         Type.from_builtin(BuiltinTypesEnum.int),
         Type.from_builtin(BuiltinTypesEnum.int),
         Type.from_builtin(BuiltinTypesEnum.int)
     ),
-    "__str__": Type.from_builtin(
-        BuiltinTypesEnum.function,
-        payload=Type.from_builtin(BuiltinTypesEnum.str),
-        function_arg_types = (
-            Type.from_builtin(BuiltinTypesEnum.int)
-        )
+    "__sub__": binop_function(
+        "__sub__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int)
     ),
+    "__mul__": binop_function(
+        "__mul__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int)
+    ),
+    "__div__": binop_function(
+        "__div__",
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int),
+        Type.from_builtin(BuiltinTypesEnum.int)
+    ),
+    "__str__": BuiltInMethod(
+        "__str__",
+        (Type.from_builtin(BuiltinTypesEnum.int),),
+        Type.from_builtin(BuiltinTypesEnum.str)
+    )
 }
 
-str_methods: dict[str, Type] = {
-    "__add__": binop_function_type(
+str_methods: dict[str, Function] = {
+    "__add__": binop_function(
+        "__add__",
         Type.from_builtin(BuiltinTypesEnum.str),
         Type.from_builtin(BuiltinTypesEnum.str),
         Type.from_builtin(BuiltinTypesEnum.str)
     ),
-    "__str__": Type.from_builtin(
-        BuiltinTypesEnum.function,
-        payload=Type.from_builtin(BuiltinTypesEnum.str),
-        function_arg_types = (
-            Type.from_builtin(BuiltinTypesEnum.str)
-        )
-    ),
+    "__str__": BuiltInMethod(
+        "__str__",
+        (Type.from_builtin(BuiltinTypesEnum.str),),
+        Type.from_builtin(BuiltinTypesEnum.str)
+    )
 }
 
-type_name_to_methods: dict[dict[str, Type]] = {
-    "int": int_methods,
-    "str": str_methods
+type_methods: dict[Type, dict[str, Function]] = {
+    Type.from_builtin(BuiltinTypesEnum.int): int_methods,
+    Type.from_builtin(BuiltinTypesEnum.str): str_methods
 }
 
 obj_name_to_type: dict[str, Type] = {
@@ -139,19 +125,58 @@ obj_name_to_type: dict[str, Type] = {
     "str": Type.from_builtin(BuiltinTypesEnum.str),
 }
 
-args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
-
-
-builtin_functions: dict[str, tuple[str, Type]] = {
-    "_print": (
-        "_print",
-        Type.from_builtin(BuiltinTypesEnum.none)
-    ),
-    "str": (
-        "{arg_types[0].name}__str__",
-        Type.from_builtin(BuiltinTypesEnum.str)
-    ),
+op_str_to_op_type: dict[str, Operation] = {
+    "+": Operation.ADD,
+    "-": Operation.SUB,
+    "*": Operation.MUL,
+    "/": Operation.DIV,
 }
+
+op_type_to_method: dict[Operation, str] = {
+    Operation.ADD: "__add__",
+    Operation.SUB: "__sub__",
+    Operation.MUL: "__mul__",
+    Operation.DIV: "__div__",
+}
+
+
+def get_type_of_source(source: Source, code_obj: CodeType, variable_types: dict[str, Type], temp_type: Type) -> Type:
+    match source.type:
+        case SourceType.CONST:
+            obj_name = code_obj.co_consts[source.value].__class__.__name__
+            var_type = obj_name_to_type[obj_name]
+        case SourceType.LOCAL:
+            var_name = code_obj.co_varnames[source.value]
+            var_type = variable_types[var_name]
+        case SourceType.TEMP:
+            var_type = temp_type
+        case _:
+            raise Exception(f"Cannot get type from SourceType {source.type.name}")
+    return var_type
+
+def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
+    match source.type:
+        case SourceType.CONST:
+            return f"    lea {reg}, [{code_obj.co_name}_CONST{source.value}]\n"
+        case SourceType.LOCAL:
+            return f"    mov {reg}, [rbp-{(source.value + 1) * 8}]\n"
+        case SourceType.TEMP:
+            if reg != "rax":
+                return f"    mov {reg}, rax\n"
+            return ""
+        case _:
+            raise Exception(f"Cannot load from {source}")
+        
+def emit_reg_to_source(source: Source, code_obj: CodeType, reg: str = "rax"):
+    match source.type:
+        case SourceType.LOCAL:
+            return f"    mov [rbp-{(source.value + 1) * 8}], {reg}\n"
+        case SourceType.TEMP:
+            if reg != "rax":
+                return f"    mov rax, {reg}\n"
+            return ""
+        case _:
+            raise Exception(f"Cannot load to {source}")
 
 class Compiler:
     def __init__(self, input_file_name: str, output_file_name: str) -> None:
@@ -170,9 +195,6 @@ class Compiler:
         while 1:
             yield f".L{i}"
             i += 1
-
-    def _generate_function_name(self, base_name: str, arg_types: list[Type]):
-        return "_".join([base_name] + [type.name for type in arg_types])
 
     def generate_constants(self, code_obj: CodeType):
         f = io.StringIO()
@@ -223,7 +245,7 @@ class Compiler:
                 case "STORE_FAST":
                     output.append(
                         ThreeAddressCode(
-                            Operation.ASSIGN.name,
+                            Operation.ASSIGN,
                             stack.pop(),
                             None,
                             Source(SourceType.LOCAL, inst.arg)
@@ -237,24 +259,26 @@ class Compiler:
                     var2 = stack.pop()
                     var1 = stack.pop()
                     if "=" in inst.argrepr:
-                        op = inst.argrepr.replace("=", "")
+                        op_str = inst.argrepr.replace("=", "")
+                        op = op_str_to_op_type[op_str]
                         output.append(ThreeAddressCode(op, var1, var2, var1))
                         stack.append(Source(SourceType.LOCAL, inst.argval))
+                        next(instructions)
                     else:
                         temp_var = f"t{next(var_iter)}"
+                        op = op_str_to_op_type[inst.argrepr]
                         output.append(ThreeAddressCode(
-                            inst.argrepr,
+                            op,
                             var1, var2,
                             Source(SourceType.TEMP, temp_var)
                         ))
                         stack.append(Source(SourceType.TEMP, temp_var))
-                    next(instructions)
                 case "CALL":
                     temp_var = f"t{next(var_iter)}"
                     for i in range(inst.argval):
-                        output.append(ThreeAddressCode(Operation.ARG.name, stack.pop()))
+                        output.append(ThreeAddressCode(Operation.ARG, stack.pop()))
                     output.append(ThreeAddressCode(
-                        Operation.CALL.name,
+                        Operation.CALL,
                         stack.pop(), None,
                         Source(SourceType.TEMP, temp_var)
                     ))
@@ -263,8 +287,9 @@ class Compiler:
                     var2 = stack.pop()
                     var1 = stack.pop()
                     temp_var = f"t{next(var_iter)}"
+                    op = op_str_to_op_type[inst.argrepr]
                     output.append(ThreeAddressCode(
-                        inst.argrepr,
+                        op,
                         var1, var2,
                         Source(SourceType.TEMP, temp_var)
                     ))
@@ -272,7 +297,7 @@ class Compiler:
                 case "POP_JUMP_IF_FALSE":
                     var1 = stack.pop()
                     output.append(ThreeAddressCode(
-                        Operation.GOTO_IF_FALSE.name,
+                        Operation.GOTO_IF_FALSE,
                         var1, None,
                         Source(SourceType.LABEL, jump_labels[inst.argval])
                     ))
@@ -280,13 +305,13 @@ class Compiler:
                     stack.pop()
                 case "JUMP_BACKWARD":
                     output.append(ThreeAddressCode(
-                        Operation.GOTO.name,
+                        Operation.GOTO,
                         None, None,
                         Source(SourceType.LABEL, jump_labels[inst.argval])
                     ))
                 case "RETURN_CONST":
                     output.append(ThreeAddressCode(
-                        Operation.RETURN.name,
+                        Operation.RETURN,
                         Source(SourceType.CONST, inst.argval
                     )
                     ))
@@ -303,6 +328,10 @@ class Compiler:
         f.write("BITS 64\n")
         f.write("default rel\n")
         f.write("extern _print\n")
+        for type, methods in type_methods.items():
+            for method_name, method in methods.items():
+                f.write(f"extern {type.name}{method.generate_function_name()}\n")
+
         f.write("extern int__str__\n")
         f.write("extern str__str__\n")
         f.write("extern int__add__\n")
@@ -347,7 +376,7 @@ class Compiler:
     def compile_nasm(
         self, code_obj: CodeType, ir: list[ThreeAddressCode], arg_types: list[Type] | None = None
     ) -> str:
-        variables_types: dict[int, Type] = {}
+        variables_types: dict[str, Type] = {}
         temp_type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
         if arg_types:
@@ -360,10 +389,14 @@ class Compiler:
             for var in code_obj.co_varnames:
                 variables_types[var] = Type.from_builtin(BuiltinTypesEnum.unknown)
 
-        base_function_name = code_obj.co_name
-        function_name: str = self._generate_function_name(
-            base_function_name, list(variables_types.values())[0 : code_obj.co_argcount]
+        curr_function = Function(
+            code_obj.co_name,
+            arg_types or (),
+            Type.from_builtin(BuiltinTypesEnum.unknown)
         )
+
+        function_name = curr_function.generate_function_name()
+        base_function_name = curr_function.base_name
 
         f = io.StringIO()
 
@@ -391,53 +424,44 @@ class Compiler:
 
         for inst in instructions:
             match inst.op:
-                case Operation.ASSIGN.name:
-                    var_type = Type.from_builtin(BuiltinTypesEnum.unknown)
-                    match inst.arg1.type:
-                        case SourceType.CONST:
-                            f.write(f"    lea rax, [{base_function_name}_CONST{inst.arg1.value}]\n")
-                            obj_name = code_obj.co_consts[inst.arg1.value].__class__.__name__
-                            var_type = obj_name_to_type[obj_name]
-                        case SourceType.LOCAL:
-                            f.write(f"    mov rax, [rbp-{(inst.arg1.value + 1) * 8}]\n")
-                            var_name = code_obj.co_varnames[inst.arg1.value]
-                            var_type = variables_types[var_name]
-                    f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
+                case Operation.ASSIGN:
+                    var_type = get_type_of_source(inst.arg1, code_obj, variables_types, temp_type)
+
+                    f.write(emit_source_to_reg(inst.arg1, code_obj))
+                    f.write(emit_reg_to_source(inst.dest, code_obj))
+
                     variables_types[code_obj.co_varnames[inst.dest.value]] = var_type
-                case Operation.ARG.name: 
+                case Operation.ARG: 
                     args: list[Source] = []
                     args.append(inst.arg1)
-                    while instructions.peek().op != Operation.CALL.name:
-                        args.append(next(ir).arg1)
+                    while instructions.peek().op != Operation.CALL:
+                        args.append(next(instructions).arg1)
                     
                     args.reverse()
 
                     for arg, reg in zip(args, args_to_regs_map):
-                        if arg.type == SourceType.LOCAL:
-                            f.write(f"    mov {reg}, [rbp-{(arg.value + 1) * 8}]\n")
-                            var_name = code_obj.co_varnames[arg.value]
-                            var_type = variables_types[var_name]
-                        elif arg.type == SourceType.TEMP:
-                            f.write(f"    mov {reg}, rax\n")
-                            var_type = temp_type
-                        else:
-                            f.write(f"    lea {reg}, [{base_function_name}_CONST{(arg.value)}]\n")
-                            obj_name = code_obj.co_consts[inst.arg1.value].__class__.__name__
-                            var_type = obj_name_to_type[obj_name]
+                        var_type = get_type_of_source(arg, code_obj, variables_types, temp_type)
+                        f.write(emit_source_to_reg(arg, code_obj, reg))
                         last_arg_types.append(var_type)
-                case Operation.CALL.name:
-                    name_template, return_type = builtin_functions.get(
+                case Operation.CALL:
+                    func = builtin_functions.get(
                         inst.arg1.value,
-                        (
-                            self._generate_function_name(
-                                inst.arg1.value,
-                                last_arg_types
-                            ),
-                            Type.from_builtin(BuiltinTypesEnum.unknown)
-                        )
+                        Function(
+                            inst.arg1.value,
+                            tuple(last_arg_types),
+                            Type.from_builtin(BuiltinTypesEnum.unknown))
                     )
-                    call_function_name = name_template.format(arg_types=last_arg_types)
+
+                    if not func.validate_args(last_arg_types):
+                        supplied_type_names = [type.name for type in last_arg_types]
+                        required_type_names = [type.name for type in func.arg_types]
+                        raise Exception(f"Function {func.base_name} requires {", ".join(required_type_names)}, but was supplied with {", ".join(supplied_type_names)}")
+                    
+                    call_function_name = func.generate_function_name()
+                    f.write("    mov rbx, rsp\n")
+                    f.write("    and rsp, -16\n")
                     f.write(f"    call {call_function_name}\n")
+                    f.write("    mov rsp, rbx\n")
                     if (
                         inst.arg1.value not in builtin_functions.keys()
                         and call_function_name not in self.codes_asm.keys()
@@ -448,21 +472,54 @@ class Compiler:
                                 last_arg_types
                             )
                         )
+                    
                     last_arg_types = []
-                case Operation.GOTO.name:
+                    if inst.dest.type == SourceType.LOCAL:
+                        f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
+                        variables_types[code_obj.co_varnames[inst.dest.value]] = func.return_type
+                    else:
+                        temp_type = func.return_type
+                case Operation.GOTO:
                     raise Exception("Unimplemented")
-                case Operation.GOTO_IF_FALSE.name:
+                case Operation.GOTO_IF_FALSE:
                     raise Exception("Unimplemented")
-                case Operation.RETURN.name:
+                case Operation.RETURN:
                     # TODO
                     f.write(f"    add rsp, {len(code_obj.co_varnames) * 8}\n")
                     f.write("    pop rbx\n")
                     f.write("    pop rbp\n")
                     f.write("    ret\n")
-                case Operation.LABEL.name:
+                case Operation.LABEL:
                     raise Exception("Unimplemented")
+                case Operation.ADD | Operation.SUB | Operation.MUL | Operation.DIV:
+                    method = op_type_to_method[inst.op]
+
+                    arg1_type = get_type_of_source(inst.arg1, code_obj, variables_types, temp_type)
+                    arg2_type = get_type_of_source(inst.arg2, code_obj, variables_types, temp_type)
+                    
+                    if not type_has_method(arg1_type, method):
+                        raise Exception(f"Type {arg1_type.name} doesn't implement {method} method.")
+                    
+                    if not type_methods[arg1_type][method].validate_args((arg1_type, arg2_type)):
+                        raise Exception(f"Method {method} of {arg1_type.name} type doesn't support {arg2_type.name} argument type.")
+
+                    return_type = type_methods[arg1_type][method].return_type
+                    
+                    f.write(emit_source_to_reg(inst.arg1, code_obj, args_to_regs_map[0]))
+                    f.write(emit_source_to_reg(inst.arg2, code_obj, args_to_regs_map[1]))
+
+                    f.write("    mov rbx, rsp\n")
+                    f.write("    and rsp, -16\n")
+                    f.write(f"    call {arg1_type.name}{method}\n")
+                    f.write("    mov rsp, rbx\n")
+
+                    if inst.dest.type == SourceType.LOCAL:
+                        f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
+                        variables_types[code_obj.co_varnames[inst.dest.value]] = return_type
+                    else:
+                        temp_type = return_type
                 case _:
-                    raise Exception("Unimplemented")
+                    raise Exception(f"Instruction {inst.op} is unimplemented")
         f.seek(0)
         self.codes_asm[function_name] = f.read()
         return function_name

@@ -1,6 +1,7 @@
 **
 !*.py
 !*.c
+!*.h
 !Makefile
 !.*
 test.py

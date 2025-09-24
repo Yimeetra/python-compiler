@@ -3,8 +3,9 @@ def print(x):
     _print("\n")
 
 def main():
-    a = "Hello, world"
+    a = 100
+    b = 4
 
-    print(a)
+    print("Hello, " + str(a * b + 20))
 
 main()

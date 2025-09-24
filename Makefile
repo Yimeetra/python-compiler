@@ -4,8 +4,14 @@ main_asm.o: main.asm
 main_c.o: main_asm.o
 	gcc -c main.c -o main_c.o -g
 
-main: main_asm.o main_c.o
-	gcc -o main main_asm.o main_c.o -lm
+int.o: int.c
+	gcc -c int.c -o int.o -g
+
+str.o: str.c
+	gcc -c str.c -o str.o -g
+
+main: main_asm.o main_c.o int.o str.o
+	gcc -o main main_asm.o main_c.o int.o str.o -lm
 
 main.asm:
 	python3 compiler.py

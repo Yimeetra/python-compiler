@@ -11,6 +11,7 @@ from ir import ThreeAddressCode, Operation, SourceType, Source
 from type import Type, BuiltinTypesEnum
 
 DEBUG = True
+EMIT_IR = True
 
 
 def type_has_method(type: Type, method: str) -> bool:
@@ -459,6 +460,11 @@ class Compiler:
                 dis.show_code(code)
 
             ir = self.compile_ir(code)
+
+            if EMIT_IR:
+                with open(f"{code.co_name}.ir", "w") as ir_f:
+                    for i in ir:
+                        ir_f.write(f"{repr(i)}\n")
             name = self.compile_nasm(code, ir, types)
 
         for name, asm in self.codes_asm.items():

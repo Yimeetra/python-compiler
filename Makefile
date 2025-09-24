@@ -20,3 +20,4 @@ clean:
 	rm -f *.o
 	rm -f main
 	rm -f *.asm
+	rm -f *.ir

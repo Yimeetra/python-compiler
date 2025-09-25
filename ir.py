@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from type  import Type, BuiltinTypesEnum
+from type import Type, BuiltinTypesEnum
 
 
 class SourceType(Enum):
@@ -53,6 +53,8 @@ class ThreeAddressCode:
     arg2: Source | None = None
     dest: Source | None = None
     dest_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
+    arg1_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
+    arg2_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
     def __repr__(self):
         match self.op:

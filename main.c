@@ -15,7 +15,7 @@ void *_print(void *string) {
 
 IntObj *id(void *value) {
     IntObj *result = malloc(sizeof(IntObj));
-    result->value = value;
+    result->value = (int64_t) value;
     return result;
 }
 

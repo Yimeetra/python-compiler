@@ -1,5 +1,6 @@
 #include "int.h"
 #include <stdlib.h>
+#include <stdio.h>
 
 extern void * None;
 

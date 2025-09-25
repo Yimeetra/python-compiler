@@ -33,7 +33,9 @@ args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 class Function:
     base_name: str
     arg_types: tuple[Type, ...]
-    return_type: Type = field(hash=False, compare=False)
+    return_type: Type = field(
+        hash=False, compare=False, default=Type.from_builtin(BuiltinTypesEnum.unknown)
+    )
 
     def generate_function_name(self) -> str:
         return "_".join([self.base_name] + [type.name for type in self.arg_types])
@@ -86,6 +88,7 @@ builtin_functions: dict[str, Function] = {
     ),
 }
 
+
 def binop_function(name: str, arg1: Type, arg2: Type, return_type: Type) -> Function:
     return BuiltInMethod(name, (arg1, arg2), return_type)
 
@@ -115,7 +118,6 @@ int_methods: dict[str, Function] = {
         Type.from_builtin(BuiltinTypesEnum.int),
         Type.from_builtin(BuiltinTypesEnum.int),
     ),
-
     "__lt__": binop_function(
         "__lt__",
         Type.from_builtin(BuiltinTypesEnum.int),
@@ -152,7 +154,6 @@ int_methods: dict[str, Function] = {
         Type.from_builtin(BuiltinTypesEnum.int),
         Type.from_builtin(BuiltinTypesEnum.int),
     ),
-
     "__str__": BuiltInMethod(
         "__str__",
         (Type.from_builtin(BuiltinTypesEnum.int),),
@@ -190,7 +191,6 @@ op_str_to_op_type: dict[str, Operation] = {
     "-": Operation.SUB,
     "*": Operation.MUL,
     "/": Operation.DIV,
-
     "<": Operation.LT,
     ">": Operation.GT,
     "<=": Operation.LE,
@@ -204,7 +204,6 @@ op_type_to_method: dict[Operation, str] = {
     Operation.SUB: "__sub__",
     Operation.MUL: "__mul__",
     Operation.DIV: "__div__",
-
     Operation.LT: "__lt__",
     Operation.GT: "__gt__",
     Operation.LE: "__le__",
@@ -219,6 +218,7 @@ class Environment:
     code_obj: CodeType
     variable_types: dict[str, Type] = field(default_factory=dict)
     temp_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
+    last_arg_types: list[Type] = field(default_factory=list)
 
 
 def get_type_of_source(source: Source, env: Environment) -> Type:
@@ -277,6 +277,7 @@ class Compiler:
         self.function_asms: dict[Function, str] = {}
         self.function_irs: dict[Function, list[ThreeAddressCode]] = {}
         self.function_envs: dict[Function, Environment] = {}
+        self.fn_name_types_to_fn: dict[tuple[str, tuple[Type, ...]], Function] = {}
 
     def __del__(self):
         self.output_file.close()
@@ -327,9 +328,7 @@ class Compiler:
             label = jump_labels.get(inst.offset)
             if label:
                 output.append(
-                    ThreeAddressCode(
-                        Operation.LABEL, Source(SourceType.LABEL, label)
-                    )
+                    ThreeAddressCode(Operation.LABEL, Source(SourceType.LABEL, label))
                 )
             match inst.opname:
                 case "LOAD_CONST":
@@ -422,11 +421,7 @@ class Compiler:
                     )
                 case "RETURN_VALUE":
                     assert isinstance(inst.arg, int)
-                    output.append(
-                        ThreeAddressCode(
-                            Operation.RETURN, stack.pop()
-                        )
-                    )
+                    output.append(ThreeAddressCode(Operation.RETURN, stack.pop()))
                 case "RESUME":
                     pass
                 case "NOP":
@@ -435,7 +430,13 @@ class Compiler:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
         return output
 
-    def annotate_ir_types(self, ir: list[ThreeAddressCode], env: Environment, arg_types: list[Type] | None) -> tuple[Type, list[ThreeAddressCode]]:
+    def annotate_ir_types(
+        self,
+        ir: list[ThreeAddressCode],
+        env: Environment,
+        arg_types: list[Type] | None,
+        start_at: int = 0,
+    ) -> tuple[Type, list[ThreeAddressCode]]:
         arg_types = arg_types or []
         return_type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
@@ -448,65 +449,62 @@ class Compiler:
         ):
             env.variable_types[var] = type
 
-        last_arg_types: list[Type] = []
+        instructions = more_itertools.seekable(enumerate(ir))
+        instructions.seek(start_at)
 
-        instructions = more_itertools.seekable(ir)
-
-        for inst in instructions:
+        for i, inst in instructions:
             match inst.op:
                 case Operation.ASSIGN:
                     assert inst.arg1 is not None
                     assert inst.dest is not None
                     assert isinstance(inst.dest.value, int)
 
-                    inst.dest_type = get_type_of_source(
-                        inst.arg1,
-                        env
+                    inst.dest_type = get_type_of_source(inst.arg1, env)
+                    env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = (
+                        inst.dest_type
                     )
-                    env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = inst.dest_type
                 case Operation.ARG:
                     assert inst.arg1 is not None
 
-                    arg_type = get_type_of_source(
-                        inst.arg1,
-                        env
-                    )
-                    last_arg_types.append(arg_type)
+                    arg_type = get_type_of_source(inst.arg1, env)
+                    env.last_arg_types.append(arg_type)
                     inst.dest_type = arg_type
                 case Operation.CALL:
                     assert inst.arg1 is not None
                     assert inst.dest is not None
                     assert isinstance(inst.arg1.value, str)
 
-                    func = builtin_functions.get(
-                        inst.arg1.value,
-                        Function(
-                            inst.arg1.value,
-                            tuple(last_arg_types),
-                            Type.from_builtin(BuiltinTypesEnum.unknown),
-                        ),
-                    )
+                    func = builtin_functions.get(inst.arg1.value)
+                    if func is None:
+                        func = self.fn_name_types_to_fn.get(
+                            (inst.arg1.value, tuple(env.last_arg_types))
+                        )
 
-                    if not func.validate_args(last_arg_types):
+                    if func is None:
+                        self.compile_queue.append(
+                            (i, Function(env.code_obj.co_name, tuple(arg_types)))
+                        )
+                        self.compile_queue.append(
+                            (0, Function(inst.arg1.value, tuple(env.last_arg_types)))
+                        )
+                        return return_type, ir
+
+                    if not func.validate_args(env.last_arg_types):
                         required_type_names = [type.name for type in func.arg_types]
-                        supplied_type_names = [type.name for type in last_arg_types]
+                        supplied_type_names = [type.name for type in env.last_arg_types]
                         raise Exception(
                             f"Function {func.base_name} requires {', '.join(required_type_names)}, but was supplied with {', '.join(supplied_type_names)}"
                         )
 
-                    if func.base_name not in builtin_functions.keys():
-                        _code_obj = self.local_code_objs[func.base_name]
-                        _env = Environment(_code_obj)
-                        return_type, _ = self.compile_final_ir(_env, last_arg_types)
-                        func.return_type = return_type
-
-                    last_arg_types = []
+                    env.last_arg_types = []
                     if inst.dest.type == SourceType.LOCAL:
                         assert isinstance(inst.dest.value, int)
-                        env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = func.return_type
+                        env.variable_types[
+                            env.code_obj.co_varnames[inst.dest.value]
+                        ] = func.return_type
                     else:
                         env.temp_type = func.return_type
-                    
+
                     inst.arg1.value = func.generate_function_name()
                     inst.dest_type = func.return_type
                 case Operation.GOTO:
@@ -520,7 +518,8 @@ class Compiler:
                     return_type = inst.dest_type
                 case Operation.LABEL:
                     pass
-                case (Operation.ADD
+                case (
+                    Operation.ADD
                     | Operation.SUB
                     | Operation.MUL
                     | Operation.DIV
@@ -529,7 +528,8 @@ class Compiler:
                     | Operation.LE
                     | Operation.GE
                     | Operation.EQ
-                    | Operation.NE):
+                    | Operation.NE
+                ):
                     assert inst.arg1 is not None
                     assert inst.arg2 is not None
                     assert inst.dest is not None
@@ -555,32 +555,18 @@ class Compiler:
 
                     if inst.dest.type == SourceType.LOCAL:
                         assert isinstance(inst.dest.value, int)
-                        env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = (
-                            return_type
-                        )
+                        env.variable_types[
+                            env.code_obj.co_varnames[inst.dest.value]
+                        ] = return_type
                     else:
                         env.temp_type = return_type
                     inst.dest_type = return_type
+                    inst.arg1_type = arg1_type
+                    inst.arg2_type = arg2_type
                 case _:
                     raise Exception(f"Instruction {inst.op} is unimplemented")
-                
+
         return return_type, ir
-    
-    def compile_final_ir(self, env: Environment, arg_types: list[Type] | None = None) -> tuple[Type, list[ThreeAddressCode]]:
-        ir = self.compile_ir(env.code_obj)
-        return_type, typed_ir = self.annotate_ir_types(ir, env, arg_types)
-
-        if EMIT_IR:
-            filename = "_".join([env.code_obj.co_name] + [type.name for type in arg_types or []])
-            with open(f"{filename}.ir", "w") as ir_f:
-                for i in ir:
-                    ir_f.write(f"{repr(i)}\n")
-
-        func = Function(env.code_obj.co_name, tuple(arg_types or []), return_type)
-        self.function_irs[func] = ir
-        self.function_envs[func] = env
-
-        return return_type, typed_ir
 
     def compile_file(self):
         f = self.output_file
@@ -599,20 +585,57 @@ class Compiler:
 
         main_code: CodeType | None
 
-        for code in [
-            const for const in code_obj.co_consts if isinstance(const, CodeType)
-        ]:
+        function_name_to_env: dict[str, Environment] = {}
+        function_name_to_ir: dict[str, list[ThreeAddressCode]] = {}
+
+        for code in code_obj.co_consts:
+            if not isinstance(code, CodeType):
+                continue
             self.local_code_objs[code.co_name] = code
+
+            env = Environment(code)
+            ir = self.compile_ir(code)
+
+            function_name_to_env[code.co_name] = env
+            function_name_to_ir[code.co_name] = ir
+
             if code.co_name == "main":
                 main_code = code
 
         if main_code is None:
-            raise Exception("Not found funciton 'main'.")
-            
-        env = Environment(main_code)
-        self.compile_final_ir(env, [])
+            raise Exception("Function 'main' is undefined")
+
+        self.compile_queue: list[tuple[int, Function]] = []
+
+        self.compile_queue.append(
+            (0, Function("main", (), Type.from_builtin(BuiltinTypesEnum.none)))
+        )
+
+        while len(self.compile_queue) > 0:
+            start_at, func = self.compile_queue.pop()
+
+            _env = self.function_envs.get(func)
+            if not _env:
+                env = function_name_to_env[func.base_name]
+                self.function_envs[func] = env
+            else:
+                env = _env
+
+            ir = self.function_irs.get(func, function_name_to_ir[func.base_name])
+            return_type, ir = self.annotate_ir_types(
+                ir, env, list(func.arg_types), start_at
+            )
+
+            self.fn_name_types_to_fn[(func.base_name, func.arg_types)] = func
+            self.function_irs[func] = ir
+            self.function_envs[func] = env
 
         for func, ir in self.function_irs.items():
+            if EMIT_IR:
+                filename = func.generate_function_name()
+                with open(f"{filename}.ir", "w") as ir_f:
+                    for i in ir:
+                        ir_f.write(f"{repr(i)}\n")
             env = self.function_envs[func]
             self.compile_nasm(ir, env)
 
@@ -625,20 +648,14 @@ class Compiler:
         f.write("None: dq 0\n")
         f.write(self.generate_constants(code_obj))
 
-    def compile_nasm(
-        self,
-        ir: list[ThreeAddressCode],
-        env: Environment
-    ) -> str:
-        arg_types = tuple(env.variable_types.values())[:env.code_obj.co_argcount]
+    def compile_nasm(self, ir: list[ThreeAddressCode], env: Environment) -> str:
+        arg_types = tuple(env.variable_types.values())[: env.code_obj.co_argcount]
 
         curr_function = Function(
             env.code_obj.co_name,
             arg_types,
             Type.from_builtin(BuiltinTypesEnum.unknown),
         )
-
-        print(curr_function)
 
         function_name = curr_function.generate_function_name()
         base_function_name = curr_function.base_name
@@ -649,7 +666,9 @@ class Compiler:
         if DEBUG:
             temp: dict = {
                 name: type.name
-                for name, type in list(env.variable_types.items())[: env.code_obj.co_argcount]
+                for name, type in list(env.variable_types.items())[
+                    : env.code_obj.co_argcount
+                ]
             }
             f.write(f"{function_name}: ; {temp}\n")
         else:
@@ -668,15 +687,14 @@ class Compiler:
         last_arg_types: list[Type] = []
 
         for i, inst in instructions:
-            if (
-                inst.dest_type == Type.from_builtin(BuiltinTypesEnum.unknown) 
-                and inst.op not in [
-                    Operation.GOTO_IF_FALSE,
-                    Operation.GOTO,
-                    Operation.LABEL,
-                    Operation.CALL # TODO: CALL is temporary
-                ]
-               ):
+            if inst.dest_type == Type.from_builtin(
+                BuiltinTypesEnum.unknown
+            ) and inst.op not in [
+                Operation.GOTO_IF_FALSE,
+                Operation.GOTO,
+                Operation.LABEL,
+                Operation.CALL,  # TODO: CALL is temporary
+            ]:
                 raise Exception(f"Instruction's {i} {inst.op.name} type is unknown")
             match inst.op:
                 case Operation.ASSIGN:
@@ -744,7 +762,8 @@ class Compiler:
                 case Operation.LABEL:
                     assert inst.arg1 is not None
                     f.write(f".{inst.arg1.value}:\n")
-                case (Operation.ADD 
+                case (
+                    Operation.ADD
                     | Operation.SUB
                     | Operation.MUL
                     | Operation.DIV
@@ -753,12 +772,12 @@ class Compiler:
                     | Operation.LE
                     | Operation.GE
                     | Operation.EQ
-                    | Operation.NE):
+                    | Operation.NE
+                ):
                     assert inst.arg1 is not None
                     assert inst.arg2 is not None
                     assert inst.dest is not None
-                    
-                    arg1_type = get_type_of_source(inst.arg1, env)
+
                     method = op_type_to_method[inst.op]
 
                     f.write(
@@ -769,7 +788,7 @@ class Compiler:
                     )
                     f.write("    mov rbx, rsp\n")
                     f.write("    and rsp, -16\n")
-                    f.write(f"    call {arg1_type.name}{method}\n")
+                    f.write(f"    call {inst.arg1_type.name}{method}\n")
                     f.write("    mov rsp, rbx\n")
 
                     if inst.dest.type == SourceType.LOCAL:

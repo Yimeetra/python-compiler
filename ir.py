@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from enum import Enum, auto
 
+from type  import Type, BuiltinTypesEnum
+
 
 class SourceType(Enum):
     CONST = auto()
@@ -50,22 +52,23 @@ class ThreeAddressCode:
     arg1: Source
     arg2: Source | None = None
     dest: Source | None = None
+    dest_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
     def __repr__(self):
         match self.op:
             case Operation.ASSIGN:
-                return f"{self.dest} := {self.arg1}"
+                return f"{self.dest_type.name} {self.dest} := {self.arg1}"
             case Operation.ARG:
-                return f"arg {self.arg1}"
+                return f"arg {self.dest_type.name} {self.arg1}"
             case Operation.CALL:
-                return f"{self.dest} := call {self.arg1}"
+                return f"{self.dest_type.name} {self.dest} := call {self.arg1}"
             case Operation.GOTO:
                 return f"goto {self.dest}"
             case Operation.GOTO_IF_FALSE:
-                return f"if not {self.arg1} goto {self.dest}"
+                return f"if not {self.dest_type.name} {self.arg1} goto {self.dest}"
             case Operation.RETURN:
-                return f"ret {self.arg1}"
+                return f"ret {self.dest_type.name} {self.arg1}"
             case Operation.LABEL:
                 return f"{self.arg1}: "
             case _:
-                return f"{self.dest} := {self.arg1} {self.op} {self.arg2}"
+                return f"{self.dest_type.name} {self.dest} := {self.arg1} {self.op} {self.arg2}"

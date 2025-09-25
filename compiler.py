@@ -10,6 +10,8 @@ import itertools
 from ir import ThreeAddressCode, Operation, SourceType, Source
 from type import Type, BuiltinTypesEnum
 
+from dataclasses import dataclass, field
+
 DEBUG = True
 EMIT_IR = True
 
@@ -26,13 +28,11 @@ def type_has_method(type: Type, method: str) -> bool:
 args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 
 
+@dataclass(unsafe_hash=True)
 class Function:
-    def __init__(
-        self, base_name: str, arg_types: tuple[Type], return_type: Type
-    ) -> None:
-        self.base_name = base_name
-        self.arg_types = arg_types
-        self.return_type = return_type
+    base_name: str
+    arg_types: tuple[Type]
+    return_type: Type
 
     def generate_function_name(self) -> str:
         return "_".join([self.base_name] + [type.name for type in self.arg_types])
@@ -211,6 +211,13 @@ op_type_to_method: dict[Operation, str] = {
     Operation.EQ: "__eq__",
     Operation.NE: "__ne__",
 }
+
+
+@dataclass
+class Environment:
+    code_obj: CodeType
+    variable_types: dict[str, Type] = field(default_factory=dict)
+    temp_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
 
 def get_type_of_source(
@@ -425,6 +432,132 @@ class Compiler:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
         return output
 
+    def annotate_ir_types(self, ir: list[ThreeAddressCode], env: Environment, arg_types: list[Type] | None):
+        arg_types = arg_types or []
+
+        for var, type in zip(
+            env.code_obj.co_varnames,
+            itertools.chain(
+                arg_types,
+                itertools.cycle([Type.from_builtin(BuiltinTypesEnum.unknown)]),
+            ),
+        ):
+            env.variable_types[var] = type
+
+        last_arg_types: list[Type] = []
+
+        instructions = more_itertools.seekable(ir)
+
+        for inst in instructions:
+            match inst.op:
+                case Operation.ASSIGN:
+                    inst.dest_type = get_type_of_source(
+                        inst.arg1,
+                        env.code_obj,
+                        env.variable_types,
+                        env.temp_type,
+                    )
+                    env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = inst.dest_type
+                case Operation.ARG:
+                    arg_type = get_type_of_source(
+                        inst.arg1,
+                        env.code_obj,
+                        env.variable_types,
+                        env.temp_type,
+                    )
+                    last_arg_types.append(arg_type)
+                    inst.dest_type = arg_type
+                case Operation.CALL:
+                    func = builtin_functions.get(
+                        inst.arg1.value,
+                        Function(
+                            inst.arg1.value,
+                            tuple(last_arg_types),
+                            Type.from_builtin(BuiltinTypesEnum.unknown),
+                        ),
+                    )
+
+                    if not func.validate_args(last_arg_types):
+                        supplied_type_names = [type.name for type in last_arg_types]
+                        required_type_names = [type.name for type in func.arg_types]
+                        raise Exception(
+                            f"Function {func.base_name} requires {', '.join(required_type_names)}, but was supplied with {', '.join(supplied_type_names)}"
+                        )
+
+                    if inst.arg1.value not in builtin_functions.keys():
+                        pass # TODO
+                        # used_generic_functions.add(func)
+
+                    last_arg_types = []
+                    if inst.dest.type == SourceType.LOCAL:
+                        env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = func.return_type
+                    else:
+                        env.temp_type = func.return_type
+                    
+                    inst.dest_type = func.return_type
+                case Operation.GOTO:
+                    pass
+                case Operation.GOTO_IF_FALSE:
+                    inst.dest_type = get_type_of_source(
+                        inst.arg1,
+                        env.code_obj,
+                        env.variable_types,
+                        env.temp_type,
+                    )
+                case Operation.RETURN:
+                    inst.dest_type = get_type_of_source(
+                        inst.arg1,
+                        env.code_obj,
+                        env.variable_types,
+                        env.temp_type,
+                    )
+                case Operation.LABEL:
+                    pass
+                case (Operation.ADD
+                    | Operation.SUB
+                    | Operation.MUL
+                    | Operation.DIV
+                    | Operation.LT
+                    | Operation.GT
+                    | Operation.LE
+                    | Operation.GE
+                    | Operation.EQ
+                    | Operation.NE):
+                    method = op_type_to_method[inst.op]
+
+                    arg1_type = get_type_of_source(
+                        inst.arg1, env.code_obj, env.variable_types, env.temp_type
+                    )
+                    arg2_type = get_type_of_source(
+                        inst.arg2, env.code_obj, env.variable_types, env.temp_type
+                    )
+
+                    if not type_has_method(arg1_type, method):
+                        raise Exception(
+                            f"Type {arg1_type.name} doesn't implement {method} method."
+                        )
+
+                    if not type_methods[arg1_type][method].validate_args(
+                        (arg1_type, arg2_type)
+                    ):
+                        raise Exception(
+                            f"Method {method} of {arg1_type.name} type doesn't support {arg2_type.name} argument type."
+                        )
+
+                    return_type = type_methods[arg1_type][method].return_type
+
+                    if inst.dest.type == SourceType.LOCAL:
+                        env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = (
+                            return_type
+                        )
+                    else:
+                        env.temp_type = return_type
+                    inst.dest_type = return_type
+                case _:
+                    raise Exception(f"Instruction {inst.op} is unimplemented")
+                
+        return ir
+
     def compile_file(self):
         f = self.output_file
         f.write("BITS 64\n")
@@ -455,17 +588,16 @@ class Compiler:
         )
 
         for code, types in self.code_to_compile:
-            if DEBUG:
-                print("--------------------------")
-                dis.show_code(code)
-
+            env = Environment(code)
             ir = self.compile_ir(code)
+            annotated_ir = self.annotate_ir_types(ir, env, types)
 
             if EMIT_IR:
                 with open(f"{code.co_name}.ir", "w") as ir_f:
-                    for i in ir:
+                    for i in annotated_ir:
                         ir_f.write(f"{repr(i)}\n")
-            name = self.compile_nasm(code, ir, types)
+
+            name = self.compile_nasm(code, ir, types) # TODO: replace with annotated ir
 
         for name, asm in self.codes_asm.items():
             f.write(asm)
@@ -672,8 +804,6 @@ class Compiler:
 if __name__ == "__main__":
     with open("main.py", "r", encoding="utf-8") as f:
         code_obj = compile(f.read(), "main.py", "exec")
-    dis.dis(code_obj)
-    dis.show_code(code_obj)
 
     compiler = Compiler("main.py", "main.asm")
     compiler.compile_file()

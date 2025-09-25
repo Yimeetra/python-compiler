@@ -3,6 +3,7 @@ from __future__ import annotations
 import dis
 import io
 from types import CodeType
+from typing import Iterable
 
 import more_itertools
 import itertools
@@ -31,13 +32,13 @@ args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 @dataclass(unsafe_hash=True)
 class Function:
     base_name: str
-    arg_types: tuple[Type]
+    arg_types: tuple[Type, ...]
     return_type: Type
 
     def generate_function_name(self) -> str:
         return "_".join([self.base_name] + [type.name for type in self.arg_types])
 
-    def validate_args(self, input_arg_types: tuple[Type]) -> bool:
+    def validate_args(self, input_arg_types: Iterable[Type]) -> bool:
         for i, j in zip(self.arg_types, input_arg_types):
             if i.name != j.name and not i.name == BuiltinTypesEnum.any.name:
                 return False
@@ -85,7 +86,7 @@ builtin_functions: dict[str, Function] = {
     ),
 }
 
-def binop_function(name: str, arg1: Type, arg2: Type, return_type: Type) -> Type:
+def binop_function(name: str, arg1: Type, arg2: Type, return_type: Type) -> Function:
     return BuiltInMethod(name, (arg1, arg2), return_type)
 
 
@@ -220,18 +221,18 @@ class Environment:
     temp_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
 
-def get_type_of_source(
-    source: Source, code_obj: CodeType, variable_types: dict[str, Type], temp_type: Type
-) -> Type:
+def get_type_of_source(source: Source, env: Environment) -> Type:
     match source.type:
         case SourceType.CONST:
-            obj_name = code_obj.co_consts[source.value].__class__.__name__
+            assert isinstance(source.value, int)
+            obj_name: str = env.code_obj.co_consts[source.value].__class__.__name__
             var_type = obj_name_to_type[obj_name]
         case SourceType.LOCAL:
-            var_name = code_obj.co_varnames[source.value]
-            var_type = variable_types[var_name]
+            assert isinstance(source.value, int)
+            var_name = env.code_obj.co_varnames[source.value]
+            var_type = env.variable_types[var_name]
         case SourceType.TEMP:
-            var_type = temp_type
+            var_type = env.temp_type
         case _:
             raise Exception(f"Cannot get type from SourceType {source.type.name}")
     return var_type
@@ -240,8 +241,10 @@ def get_type_of_source(
 def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
     match source.type:
         case SourceType.CONST:
+            assert isinstance(source.value, int)
             return f"    lea {reg}, [{code_obj.co_name}_CONST{source.value}]\n"
         case SourceType.LOCAL:
+            assert isinstance(source.value, int)
             return f"    mov {reg}, [rbp-{(source.value + 1) * 8}]\n"
         case SourceType.TEMP:
             if reg != "rax":
@@ -254,6 +257,7 @@ def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
 def emit_reg_to_source(source: Source, code_obj: CodeType, reg: str = "rax"):
     match source.type:
         case SourceType.LOCAL:
+            assert isinstance(source.value, int)
             return f"    mov [rbp-{(source.value + 1) * 8}], {reg}\n"
         case SourceType.TEMP:
             if reg != "rax":
@@ -451,23 +455,26 @@ class Compiler:
         for inst in instructions:
             match inst.op:
                 case Operation.ASSIGN:
+                    assert inst.dest is not None
+                    assert isinstance(inst.dest.value, int)
+
                     inst.dest_type = get_type_of_source(
                         inst.arg1,
-                        env.code_obj,
-                        env.variable_types,
-                        env.temp_type,
+                        env
                     )
                     env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = inst.dest_type
                 case Operation.ARG:
                     arg_type = get_type_of_source(
                         inst.arg1,
-                        env.code_obj,
-                        env.variable_types,
-                        env.temp_type,
+                        env
                     )
                     last_arg_types.append(arg_type)
                     inst.dest_type = arg_type
                 case Operation.CALL:
+                    assert inst.arg1 is not None
+                    assert inst.dest is not None
+                    assert isinstance(inst.arg1.value, str)
+
                     func = builtin_functions.get(
                         inst.arg1.value,
                         Function(
@@ -490,6 +497,7 @@ class Compiler:
 
                     last_arg_types = []
                     if inst.dest.type == SourceType.LOCAL:
+                        assert isinstance(inst.dest.value, int)
                         env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = func.return_type
                     else:
                         env.temp_type = func.return_type
@@ -498,19 +506,9 @@ class Compiler:
                 case Operation.GOTO:
                     pass
                 case Operation.GOTO_IF_FALSE:
-                    inst.dest_type = get_type_of_source(
-                        inst.arg1,
-                        env.code_obj,
-                        env.variable_types,
-                        env.temp_type,
-                    )
+                    inst.dest_type = get_type_of_source(inst.arg1, env)
                 case Operation.RETURN:
-                    inst.dest_type = get_type_of_source(
-                        inst.arg1,
-                        env.code_obj,
-                        env.variable_types,
-                        env.temp_type,
-                    )
+                    inst.dest_type = get_type_of_source(inst.arg1, env)
                 case Operation.LABEL:
                     pass
                 case (Operation.ADD
@@ -523,14 +521,13 @@ class Compiler:
                     | Operation.GE
                     | Operation.EQ
                     | Operation.NE):
+                    assert inst.arg2 is not None
+                    assert inst.dest is not None
+
                     method = op_type_to_method[inst.op]
 
-                    arg1_type = get_type_of_source(
-                        inst.arg1, env.code_obj, env.variable_types, env.temp_type
-                    )
-                    arg2_type = get_type_of_source(
-                        inst.arg2, env.code_obj, env.variable_types, env.temp_type
-                    )
+                    arg1_type = get_type_of_source(inst.arg1, env)
+                    arg2_type = get_type_of_source(inst.arg2, env)
 
                     if not type_has_method(arg1_type, method):
                         raise Exception(
@@ -547,6 +544,7 @@ class Compiler:
                     return_type = type_methods[arg1_type][method].return_type
 
                     if inst.dest.type == SourceType.LOCAL:
+                        assert isinstance(inst.dest.value, int)
                         env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = (
                             return_type
                         )
@@ -632,7 +630,7 @@ class Compiler:
 
         curr_function = Function(
             code_obj.co_name,
-            arg_types or (),
+            tuple(arg_types or ()),
             Type.from_builtin(BuiltinTypesEnum.unknown),
         )
 
@@ -666,8 +664,11 @@ class Compiler:
         for inst in instructions:
             match inst.op:
                 case Operation.ASSIGN:
+                    assert inst.dest is not None
+                    assert isinstance(inst.dest.value, int)
+                
                     var_type = get_type_of_source(
-                        inst.arg1, code_obj, variables_types, temp_type
+                        inst.arg1, Environment(code_obj, variables_types, temp_type)
                     )
 
                     f.write(emit_source_to_reg(inst.arg1, code_obj))
@@ -684,11 +685,15 @@ class Compiler:
 
                     for arg, reg in zip(args, args_to_regs_map):
                         var_type = get_type_of_source(
-                            arg, code_obj, variables_types, temp_type
+                            arg, Environment(code_obj, variables_types, temp_type)
                         )
                         f.write(emit_source_to_reg(arg, code_obj, reg))
                         last_arg_types.append(var_type)
                 case Operation.CALL:
+                    assert inst.dest is not None
+                    assert inst.arg1 is not None
+                    assert isinstance(inst.arg1.value, str)
+
                     func = builtin_functions.get(
                         inst.arg1.value,
                         Function(
@@ -720,6 +725,7 @@ class Compiler:
 
                     last_arg_types = []
                     if inst.dest.type == SourceType.LOCAL:
+                        assert isinstance(inst.dest.value, int)
                         f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
                         variables_types[code_obj.co_varnames[inst.dest.value]] = (
                             func.return_type
@@ -727,8 +733,10 @@ class Compiler:
                     else:
                         temp_type = func.return_type
                 case Operation.GOTO:
+                    assert inst.dest is not None
                     f.write(f"    jmp .{inst.dest.value}\n")
                 case Operation.GOTO_IF_FALSE:
+                    assert inst.dest is not None
                     f.write(emit_source_to_reg(inst.arg1, code_obj))
                     f.write("    mov rax, [rax]\n")
                     f.write("    test rax, rax\n")
@@ -752,13 +760,16 @@ class Compiler:
                     | Operation.GE
                     | Operation.EQ
                     | Operation.NE):
+                    assert inst.dest is not None
+                    assert inst.arg2 is not None
+                    
                     method = op_type_to_method[inst.op]
 
                     arg1_type = get_type_of_source(
-                        inst.arg1, code_obj, variables_types, temp_type
+                        inst.arg1, Environment(code_obj, variables_types, temp_type)
                     )
                     arg2_type = get_type_of_source(
-                        inst.arg2, code_obj, variables_types, temp_type
+                        inst.arg2, Environment(code_obj, variables_types, temp_type)
                     )
 
                     if not type_has_method(arg1_type, method):
@@ -788,6 +799,7 @@ class Compiler:
                     f.write("    mov rsp, rbx\n")
 
                     if inst.dest.type == SourceType.LOCAL:
+                        assert isinstance(inst.dest.value, int)
                         f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
                         variables_types[code_obj.co_varnames[inst.dest.value]] = (
                             return_type
@@ -802,8 +814,5 @@ class Compiler:
 
 
 if __name__ == "__main__":
-    with open("main.py", "r", encoding="utf-8") as f:
-        code_obj = compile(f.read(), "main.py", "exec")
-
     compiler = Compiler("main.py", "main.asm")
     compiler.compile_file()

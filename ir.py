@@ -38,7 +38,7 @@ class Operation(Enum):
 
 
 class Source:
-    def __init__(self, type: SourceType, value: str = ""):
+    def __init__(self, type: SourceType, value: str | int = ""):
         self.type = type
         self.value = value
 

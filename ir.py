@@ -49,7 +49,7 @@ class Source:
 @dataclass
 class ThreeAddressCode:
     op: Operation
-    arg1: Source
+    arg1: Source | None = None
     arg2: Source | None = None
     dest: Source | None = None
     dest_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)

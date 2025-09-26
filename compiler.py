@@ -18,7 +18,8 @@ EMIT_IR = True
 
 
 def type_has_method(type: Type, method: str) -> bool:
-    methods = type_methods.get(type)
+    type_copy = Type(type.name)
+    methods = type_methods.get(type_copy)
     if not methods:
         return False
     if not methods.get(method):
@@ -33,7 +34,7 @@ args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 class Function:
     base_name: str
     arg_types: tuple[Type, ...]
-    return_type: Type = field(
+    _return_type: Type = field(
         hash=False, compare=False, default=Type.from_builtin(BuiltinTypesEnum.unknown)
     )
 
@@ -45,6 +46,9 @@ class Function:
             if i.name != j.name and not i.name == BuiltinTypesEnum.any.name:
                 return False
         return True
+
+    def get_return_type(self):
+        return self._return_type
 
 
 class BuiltInFunction(Function):
@@ -68,6 +72,15 @@ class BuiltInMethod(Function):
         return self.base_name
 
 
+class GetItemMethod(Function):
+    def generate_function_name(self) -> str:
+        return self.base_name
+
+    @property
+    def get_return_type(self):
+        return self.arg_types[0].sub_type
+
+
 builtin_functions: dict[str, Function] = {
     "_print": (
         BuiltInFunction(
@@ -78,6 +91,9 @@ builtin_functions: dict[str, Function] = {
     ),
     "str": (
         BuiltInMethodMapFunction("str", (), (Type.from_builtin(BuiltinTypesEnum.str)))
+    ),
+    "len": (
+        BuiltInMethodMapFunction("len", (), (Type.from_builtin(BuiltinTypesEnum.int)))
     ),
     "id": (
         BuiltInFunction(
@@ -175,14 +191,29 @@ str_methods: dict[str, Function] = {
     ),
 }
 
+list_methods: dict[str, Function] = {
+    "__len__": BuiltInMethod(
+        "__len__",
+        (Type.from_builtin(BuiltinTypesEnum.list),),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__get_item__": GetItemMethod(
+        "__get_item__",
+        (Type.from_builtin(BuiltinTypesEnum.list),),
+        Type.from_builtin(BuiltinTypesEnum.unknown),
+    ),
+}
+
 type_methods: dict[Type, dict[str, Function]] = {
     Type.from_builtin(BuiltinTypesEnum.int): int_methods,
     Type.from_builtin(BuiltinTypesEnum.str): str_methods,
+    Type.from_builtin(BuiltinTypesEnum.list): list_methods,
 }
 
 obj_name_to_type: dict[str, Type] = {
     "int": Type.from_builtin(BuiltinTypesEnum.int),
     "str": Type.from_builtin(BuiltinTypesEnum.str),
+    "list": Type.from_builtin(BuiltinTypesEnum.list),
     "NoneType": Type.from_builtin(BuiltinTypesEnum.none),
 }
 
@@ -210,6 +241,7 @@ op_type_to_method: dict[Operation, str] = {
     Operation.GE: "__ge__",
     Operation.EQ: "__eq__",
     Operation.NE: "__ne__",
+    Operation.GET_ITEM: "__get_item__",
 }
 
 
@@ -420,12 +452,38 @@ class Compiler:
                         )
                     )
                 case "RETURN_VALUE":
-                    assert isinstance(inst.arg, int)
                     output.append(ThreeAddressCode(Operation.RETURN, stack.pop()))
                 case "RESUME":
                     pass
                 case "NOP":
                     pass
+                case "BUILD_LIST":
+                    assert isinstance(inst.arg, int)
+                    temp_var = f"t{next(var_iter)}"
+
+                    for i in range(inst.arg):
+                        output.append(
+                            ThreeAddressCode(Operation.VA_ARG, arg1=stack.pop())
+                        )
+                    output.append(
+                        ThreeAddressCode(
+                            Operation.BUILD_LIST, dest=Source(SourceType.TEMP, temp_var)
+                        )
+                    )
+                    stack.append(Source(SourceType.TEMP, temp_var))
+                case "BINARY_SUBSCR":
+                    temp_var = f"t{next(var_iter)}"
+                    index = stack.pop()
+                    src = stack.pop()
+                    output.append(
+                        ThreeAddressCode(
+                            Operation.GET_ITEM,
+                            dest=Source(SourceType.TEMP, temp_var),
+                            arg1=src,
+                            arg2=index,
+                        )
+                    )
+                    stack.append(Source(SourceType.TEMP, temp_var))
                 case _:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
         return output
@@ -448,6 +506,9 @@ class Compiler:
             ),
         ):
             env.variable_types[var] = type
+
+        variadic_args_count = 0
+        variadic_args_types: set[Type] = set()
 
         instructions = more_itertools.seekable(enumerate(ir))
         instructions.seek(start_at)
@@ -501,12 +562,12 @@ class Compiler:
                         assert isinstance(inst.dest.value, int)
                         env.variable_types[
                             env.code_obj.co_varnames[inst.dest.value]
-                        ] = func.return_type
+                        ] = func.get_return_type()
                     else:
-                        env.temp_type = func.return_type
+                        env.temp_type = func.get_return_type()
 
                     inst.arg1.value = func.generate_function_name()
-                    inst.dest_type = func.return_type
+                    inst.dest_type = func.get_return_type()
                 case Operation.GOTO:
                     pass
                 case Operation.GOTO_IF_FALSE:
@@ -551,7 +612,7 @@ class Compiler:
                             f"Method {method} of {arg1_type.name} type doesn't support {arg2_type.name} argument type."
                         )
 
-                    return_type = type_methods[arg1_type][method].return_type
+                    return_type = type_methods[arg1_type][method].get_return_type()
 
                     if inst.dest.type == SourceType.LOCAL:
                         assert isinstance(inst.dest.value, int)
@@ -563,6 +624,31 @@ class Compiler:
                     inst.dest_type = return_type
                     inst.arg1_type = arg1_type
                     inst.arg2_type = arg2_type
+                case Operation.VA_ARG:
+                    assert inst.arg1 is not None
+                    variadic_args_count += 1
+                    va_arg_type = get_type_of_source(inst.arg1, env)
+                    variadic_args_types.add(va_arg_type)
+                    inst.dest_type = va_arg_type
+                case Operation.BUILD_LIST:
+                    if len(variadic_args_types) > 1:
+                        raise Exception("Allowed lists only of one type.")
+
+                    if len(variadic_args_types) != 0:
+                        list_type = variadic_args_types.pop()
+                    else:
+                        list_type = Type.from_builtin(BuiltinTypesEnum.none)
+
+                    env.temp_type = Type.from_builtin(BuiltinTypesEnum.list, list_type)
+                    inst.dest_type = Type.from_builtin(BuiltinTypesEnum.list, list_type)
+                case Operation.GET_ITEM:
+                    assert inst.arg1 is not None
+                    container_type = get_type_of_source(inst.arg1, env)
+
+                    assert container_type.sub_type is not None
+                    inst.dest_type = container_type.sub_type
+                    inst.arg1_type = container_type
+                    env.temp_type = container_type.sub_type
                 case _:
                     raise Exception(f"Instruction {inst.op} is unimplemented")
 
@@ -574,6 +660,8 @@ class Compiler:
         f.write("default rel\n")
         f.write("extern _print\n")
         f.write("extern id\n")
+        f.write("extern build_list\n")
+
         for type, methods in type_methods.items():
             for method_name, method in methods.items():
                 f.write(f"extern {type.name}{method.generate_function_name()}\n")
@@ -602,6 +690,12 @@ class Compiler:
             if code.co_name == "main":
                 main_code = code
 
+            if EMIT_IR:
+                filename = code.co_name
+                with open(f"{filename}.ir", "w") as ir_f:
+                    for i in ir:
+                        ir_f.write(f"{repr(i)}\n")
+
         if main_code is None:
             raise Exception("Function 'main' is undefined")
 
@@ -625,6 +719,8 @@ class Compiler:
             return_type, ir = self.annotate_ir_types(
                 ir, env, list(func.arg_types), start_at
             )
+
+            func._return_type = return_type
 
             self.fn_name_types_to_fn[(func.base_name, func.arg_types)] = func
             self.function_irs[func] = ir
@@ -685,6 +781,9 @@ class Compiler:
         instructions = more_itertools.seekable(enumerate(ir))
 
         last_arg_types: list[Type] = []
+        variadic_args_count: int = 0
+
+        args: list[Source]
 
         for i, inst in instructions:
             if inst.dest_type == Type.from_builtin(
@@ -696,6 +795,8 @@ class Compiler:
                 Operation.CALL,  # TODO: CALL is temporary
             ]:
                 raise Exception(f"Instruction's {i} {inst.op.name} type is unknown")
+            if DEBUG:
+                f.write(f"; {inst}\n")
             match inst.op:
                 case Operation.ASSIGN:
                     assert inst.arg1 is not None
@@ -707,9 +808,9 @@ class Compiler:
                 case Operation.ARG:
                     assert inst.arg1 is not None
 
-                    args: list[Source] = []
+                    args = []
                     args.append(inst.arg1)
-                    while instructions.peek()[1].op != Operation.CALL:
+                    while instructions.peek()[1].op == Operation.ARG:
                         arg = next(instructions)[1].arg1
                         assert arg is not None
                         args.append(arg)
@@ -773,6 +874,7 @@ class Compiler:
                     | Operation.GE
                     | Operation.EQ
                     | Operation.NE
+                    | Operation.GET_ITEM
                 ):
                     assert inst.arg1 is not None
                     assert inst.arg2 is not None
@@ -794,6 +896,31 @@ class Compiler:
                     if inst.dest.type == SourceType.LOCAL:
                         assert isinstance(inst.dest.value, int)
                         f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
+                case Operation.VA_ARG:
+                    assert inst.arg1 is not None
+
+                    args = []
+                    args.append(inst.arg1)
+                    variadic_args_count += 1
+                    while instructions.peek()[1].op == Operation.VA_ARG:
+                        variadic_args_count += 1
+                        arg = next(instructions)[1].arg1
+                        assert arg is not None
+                        args.append(arg)
+
+                    args.reverse()
+
+                    for arg, reg in zip(args, args_to_regs_map[1:]):
+                        f.write(emit_source_to_reg(arg, env.code_obj, reg))
+
+                    assert inst.arg1 is not None
+                case Operation.BUILD_LIST:
+                    f.write(f"    mov rdi, {variadic_args_count}\n")
+                    f.write("    mov rbx, rsp\n")
+                    f.write("    and rsp, -16\n")
+                    f.write("    call build_list\n")
+                    f.write("    mov rsp, rbx\n")
+                    variadic_args_count = 0
                 case _:
                     raise Exception(f"Instruction {inst.op} is unimplemented")
         f.seek(0)
@@ -803,4 +930,10 @@ class Compiler:
 
 if __name__ == "__main__":
     compiler = Compiler("main.py", "main.asm")
+
+    with open(compiler.input_file_name, "r", encoding="utf-8") as _f:
+        code_obj = compile(_f.read(), compiler.input_file_name, "exec")
+
+    dis.dis(code_obj)
+
     compiler.compile_file()

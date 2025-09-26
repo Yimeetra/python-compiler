@@ -16,7 +16,11 @@ class Operation(Enum):
     ASSIGN = auto()
 
     ARG = auto()
+    VA_ARG = auto()
     CALL = auto()
+
+    BUILD_LIST = auto()
+    GET_ITEM = auto()
 
     GOTO_IF_FALSE = auto()
     GOTO = auto()
@@ -59,18 +63,26 @@ class ThreeAddressCode:
     def __repr__(self):
         match self.op:
             case Operation.ASSIGN:
-                return f"{self.dest_type.name} {self.dest} := {self.arg1}"
+                return f"{self.dest_type} {self.dest} := {self.arg1}"
             case Operation.ARG:
-                return f"arg {self.dest_type.name} {self.arg1}"
+                return f"arg {self.dest_type} {self.arg1}"
             case Operation.CALL:
-                return f"{self.dest_type.name} {self.dest} := call {self.arg1}"
+                return f"{self.dest_type} {self.dest} := call {self.arg1}"
             case Operation.GOTO:
                 return f"goto {self.dest}"
             case Operation.GOTO_IF_FALSE:
-                return f"if not {self.dest_type.name} {self.arg1} goto {self.dest}"
+                return f"if not {self.dest_type} {self.arg1} goto {self.dest}"
             case Operation.RETURN:
-                return f"ret {self.dest_type.name} {self.arg1}"
+                return f"ret {self.dest_type} {self.arg1}"
             case Operation.LABEL:
                 return f"{self.arg1}: "
+            case Operation.VA_ARG:
+                return f"va_arg {self.dest_type} {self.arg1}"
+            case Operation.BUILD_LIST:
+                return f"build_list {self.dest_type}"
+            case Operation.GET_ITEM:
+                return f"{self.dest_type} {self.dest} := {self.arg1}[{self.arg2}]"
             case _:
-                return f"{self.dest_type.name} {self.dest} := {self.arg1} {self.op} {self.arg2}"
+                return (
+                    f"{self.dest_type} {self.dest} := {self.arg1} {self.op} {self.arg2}"
+                )

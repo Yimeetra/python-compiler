@@ -10,8 +10,11 @@ int.o: int.c
 str.o: str.c
 	gcc -c str.c -o str.o -g
 
-main: main_asm.o main_c.o int.o str.o
-	gcc -o main main_asm.o main_c.o int.o str.o -lm
+list.o: list.c
+	gcc -c list.c -o list.o -g
+
+main: main_asm.o main_c.o int.o str.o list.o
+	gcc -o main main_asm.o main_c.o int.o str.o list.o -lm
 
 main.asm:
 	python3 compiler.py

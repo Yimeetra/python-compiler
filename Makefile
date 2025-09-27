@@ -13,8 +13,11 @@ str.o: str.c
 list.o: list.c
 	gcc -c list.c -o list.o -g
 
-main: main_asm.o main_c.o int.o str.o list.o
-	gcc -o main main_asm.o main_c.o int.o str.o list.o -lm
+tuple.o: tuple.c
+	gcc -c tuple.c -o tuple.o -g
+
+main: main_asm.o main_c.o int.o str.o list.o tuple.o
+	gcc -o main main_asm.o main_c.o int.o str.o list.o tuple.o -lm
 
 main.asm:
 	python3 compiler.py

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 
@@ -13,6 +13,7 @@ class BuiltinTypesEnum(Enum):
     str = auto()
 
     list = auto()
+    tuple = auto()
 
     function = auto()
 
@@ -20,11 +21,13 @@ class BuiltinTypesEnum(Enum):
 @dataclass(unsafe_hash=True)
 class Type:
     name: str
-    sub_type: Type | None = None
+    sub_types: tuple[Type, ...] = field(default_factory=tuple)
 
     @staticmethod
-    def from_builtin(builtin: BuiltinTypesEnum, sub_type=None) -> Type:
-        return Type(builtin.name, sub_type)
+    def from_builtin(
+        builtin: BuiltinTypesEnum, sub_types: tuple[Type] | None = None
+    ) -> Type:
+        return Type(builtin.name, sub_types or ())
 
     def __repr__(self):
-        return f"{self.name}{f'({self.sub_type})' if self.sub_type else ''}"
+        return f"{self.name}{self.sub_types if self.sub_types != () else ''}"

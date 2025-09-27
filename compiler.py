@@ -41,11 +41,14 @@ class Function:
     def generate_function_name(self) -> str:
         return "_".join([self.base_name] + [type.name for type in self.arg_types])
 
-    def validate_args(self, input_arg_types: Iterable[Type]) -> bool:
+    def validate_args(self, input_arg_types: Iterable[Type]):
         for i, j in zip(self.arg_types, input_arg_types):
             if i.name != j.name and not i.name == BuiltinTypesEnum.any.name:
-                return False
-        return True
+                required_type_names = [type.name for type in self.arg_types]
+                supplied_type_names = [type.name for type in input_arg_types]
+                raise Exception(
+                    f"Function {self.base_name} requires {', '.join(required_type_names)}, but was supplied with {', '.join(supplied_type_names)}"
+                )
 
     def get_return_type(self):
         return self._return_type
@@ -60,11 +63,13 @@ class BuiltInMethodMapFunction(Function):
     def generate_function_name(self) -> str:
         return f"{self.arg_types[0].name}__{self.base_name}__"
 
-    def validate_args(self, input_arg_types) -> bool:
+    def validate_args(self, input_arg_types):
         if type_has_method(input_arg_types[0], f"__{self.base_name}__"):
             self.arg_types = input_arg_types
-            return True
-        return False
+        else:
+            raise Exception(
+                f"Type '{input_arg_types[0]}' doesn't implement method '__{self.base_name}__'"
+            )
 
 
 class BuiltInMethod(Function):
@@ -76,9 +81,8 @@ class GetItemMethod(Function):
     def generate_function_name(self) -> str:
         return self.base_name
 
-    @property
     def get_return_type(self):
-        return self.arg_types[0].sub_type
+        return self.arg_types[0].sub_types[0]
 
 
 builtin_functions: dict[str, Function] = {
@@ -197,8 +201,21 @@ list_methods: dict[str, Function] = {
         (Type.from_builtin(BuiltinTypesEnum.list),),
         Type.from_builtin(BuiltinTypesEnum.int),
     ),
-    "__get_item__": GetItemMethod(
-        "__get_item__",
+    "__getitem__": GetItemMethod(
+        "__getitem__",
+        (Type.from_builtin(BuiltinTypesEnum.list),),
+        Type.from_builtin(BuiltinTypesEnum.unknown),
+    ),
+}
+
+tuple_methods: dict[str, Function] = {
+    "__len__": BuiltInMethod(
+        "__len__",
+        (Type.from_builtin(BuiltinTypesEnum.list),),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+    "__getitem__": GetItemMethod(
+        "__getitem__",
         (Type.from_builtin(BuiltinTypesEnum.list),),
         Type.from_builtin(BuiltinTypesEnum.unknown),
     ),
@@ -208,12 +225,14 @@ type_methods: dict[Type, dict[str, Function]] = {
     Type.from_builtin(BuiltinTypesEnum.int): int_methods,
     Type.from_builtin(BuiltinTypesEnum.str): str_methods,
     Type.from_builtin(BuiltinTypesEnum.list): list_methods,
+    Type.from_builtin(BuiltinTypesEnum.tuple): tuple_methods,
 }
 
 obj_name_to_type: dict[str, Type] = {
     "int": Type.from_builtin(BuiltinTypesEnum.int),
     "str": Type.from_builtin(BuiltinTypesEnum.str),
     "list": Type.from_builtin(BuiltinTypesEnum.list),
+    "tuple": Type.from_builtin(BuiltinTypesEnum.tuple),
     "NoneType": Type.from_builtin(BuiltinTypesEnum.none),
 }
 
@@ -241,7 +260,7 @@ op_type_to_method: dict[Operation, str] = {
     Operation.GE: "__ge__",
     Operation.EQ: "__eq__",
     Operation.NE: "__ne__",
-    Operation.GET_ITEM: "__get_item__",
+    Operation.GET_ITEM: "__getitem__",
 }
 
 
@@ -259,6 +278,13 @@ def get_type_of_source(source: Source, env: Environment) -> Type:
             assert isinstance(source.value, int)
             obj_name: str = env.code_obj.co_consts[source.value].__class__.__name__
             var_type = obj_name_to_type[obj_name]
+            if var_type.name == Type.from_builtin(BuiltinTypesEnum.tuple).name:
+                tuple_types = []
+                for item in env.code_obj.co_consts[source.value]:
+                    item_name: str = item.__class__.__name__
+                    item_type = obj_name_to_type[item_name]
+                    tuple_types.append(item_type)
+                var_type.sub_types = tuple(tuple_types)
         case SourceType.LOCAL:
             assert isinstance(source.value, int)
             var_name = env.code_obj.co_varnames[source.value]
@@ -299,6 +325,33 @@ def emit_reg_to_source(source: Source, code_obj: CodeType, reg: str = "rax"):
             raise Exception(f"Cannot load to {source}")
 
 
+def emit_const_obj(env_name: str, obj, const_n: int):
+    f = io.StringIO()
+
+    f.write(f"{env_name}_CONST{const_n}: \n")
+    match obj:
+        case str():
+            f.write(".value_p: dq .value\n")
+            f.write('.value: db "' + obj.replace("\n", '", 0xA, 0xD, "') + '", 0\n')
+        case int():
+            f.write(f"dq {obj}\n")
+        case tuple():
+            f.write(".values_p: dq .value0_p\n")
+            f.write(f".length: dq {len(obj)}\n")
+            for i, _ in enumerate(obj):
+                f.write(f".value{i}_p: dq .value{i}_CONST{const_n}\n")
+            for i, item in enumerate(obj):
+                f.write(emit_const_obj(f".value{i}", item, const_n))
+        case None:
+            pass
+        case _:
+            raise Exception(
+                f"Constants with type '{type(obj).__name__}' are not supported."
+            )
+
+    return f.getvalue()
+
+
 class Compiler:
     def __init__(self, input_file_name: str, output_file_name: str) -> None:
         self.input_file_name: str = input_file_name
@@ -325,17 +378,7 @@ class Compiler:
         for code in code_obj.co_consts:
             if isinstance(code, CodeType):
                 for i, const in enumerate(code.co_consts):
-                    f.write(f"{code.co_name}_CONST{i}: \n")
-                    match const:
-                        case str():
-                            f.write(".value_p: dq .value\n")
-                            f.write(
-                                '.value: db "'
-                                + const.replace("\n", '", 0xA, 0xD, "')
-                                + '", 0\n'
-                            )
-                        case int():
-                            f.write(f"dq {const}\n")
+                    f.write(emit_const_obj(code.co_name, const, i))
         f.seek(0)
         return f.read()
 
@@ -499,7 +542,7 @@ class Compiler:
         return_type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
         for var, type in zip(
-            env.code_obj.co_varnames,
+            env.code_obj.co_varnames[: env.code_obj.co_argcount],
             itertools.chain(
                 arg_types,
                 itertools.cycle([Type.from_builtin(BuiltinTypesEnum.unknown)]),
@@ -550,12 +593,7 @@ class Compiler:
                         )
                         return return_type, ir
 
-                    if not func.validate_args(env.last_arg_types):
-                        required_type_names = [type.name for type in func.arg_types]
-                        supplied_type_names = [type.name for type in env.last_arg_types]
-                        raise Exception(
-                            f"Function {func.base_name} requires {', '.join(required_type_names)}, but was supplied with {', '.join(supplied_type_names)}"
-                        )
+                    func.validate_args(env.last_arg_types)
 
                     env.last_arg_types = []
                     if inst.dest.type == SourceType.LOCAL:
@@ -605,12 +643,9 @@ class Compiler:
                             f"Type {arg1_type.name} doesn't implement {method} method."
                         )
 
-                    if not type_methods[arg1_type][method].validate_args(
+                    type_methods[arg1_type][method].validate_args(
                         (arg1_type, arg2_type)
-                    ):
-                        raise Exception(
-                            f"Method {method} of {arg1_type.name} type doesn't support {arg2_type.name} argument type."
-                        )
+                    )
 
                     return_type = type_methods[arg1_type][method].get_return_type()
 
@@ -639,16 +674,36 @@ class Compiler:
                     else:
                         list_type = Type.from_builtin(BuiltinTypesEnum.none)
 
-                    env.temp_type = Type.from_builtin(BuiltinTypesEnum.list, list_type)
-                    inst.dest_type = Type.from_builtin(BuiltinTypesEnum.list, list_type)
+                    env.temp_type = Type.from_builtin(
+                        BuiltinTypesEnum.list, (list_type,)
+                    )
+                    inst.dest_type = Type.from_builtin(
+                        BuiltinTypesEnum.list, (list_type,)
+                    )
                 case Operation.GET_ITEM:
                     assert inst.arg1 is not None
                     container_type = get_type_of_source(inst.arg1, env)
+                    index_type = get_type_of_source(inst.arg2, env)
 
-                    assert container_type.sub_type is not None
-                    inst.dest_type = container_type.sub_type
-                    inst.arg1_type = container_type
-                    env.temp_type = container_type.sub_type
+                    if (
+                        container_type.name
+                        == Type.from_builtin(BuiltinTypesEnum.tuple).name
+                    ):
+                        if inst.arg2.type != SourceType.CONST:
+                            raise Exception("Tuple index must be constant.")
+
+                        if index_type != Type.from_builtin(BuiltinTypesEnum.int):
+                            raise Exception("Tuple index must be 'int' type.")
+
+                        index = env.code_obj.co_consts[inst.arg2.value]
+                        inst.dest_type = container_type.sub_types[index]
+                        inst.arg1_type = container_type
+                        env.temp_type = container_type.sub_types[index]
+                    else:
+                        assert len(container_type.sub_types) > 0
+                        inst.dest_type = container_type.sub_types[0]
+                        inst.arg1_type = container_type
+                        env.temp_type = container_type.sub_types[0]
                 case _:
                     raise Exception(f"Instruction {inst.op} is unimplemented")
 
@@ -681,10 +736,8 @@ class Compiler:
                 continue
             self.local_code_objs[code.co_name] = code
 
-            env = Environment(code)
             ir = self.compile_ir(code)
 
-            function_name_to_env[code.co_name] = env
             function_name_to_ir[code.co_name] = ir
 
             if code.co_name == "main":
@@ -710,12 +763,20 @@ class Compiler:
 
             _env = self.function_envs.get(func)
             if not _env:
-                env = function_name_to_env[func.base_name]
+                code = self.local_code_objs[func.base_name]
+                env = Environment(code)
                 self.function_envs[func] = env
             else:
                 env = _env
 
-            ir = self.function_irs.get(func, function_name_to_ir[func.base_name])
+            _ir = self.function_irs.get(func)
+            if not _ir:
+                ir = function_name_to_ir[func.base_name].copy()
+                for i, inst in enumerate(ir):
+                    ir[i] = inst.copy()
+            else:
+                ir = _ir
+
             return_type, ir = self.annotate_ir_types(
                 ir, env, list(func.arg_types), start_at
             )
@@ -726,12 +787,13 @@ class Compiler:
             self.function_irs[func] = ir
             self.function_envs[func] = env
 
-        for func, ir in self.function_irs.items():
             if EMIT_IR:
                 filename = func.generate_function_name()
                 with open(f"{filename}.ir", "w") as ir_f:
                     for i in ir:
                         ir_f.write(f"{repr(i)}\n")
+
+        for func, ir in self.function_irs.items():
             env = self.function_envs[func]
             self.compile_nasm(ir, env)
 

@@ -9,4 +9,4 @@ typedef struct {
 
 ListObj *build_list(int n, ...);
 IntObj *list__len__(ListObj *self);
-void *list__get_item__(ListObj *self, IntObj *index);
+void *list__getitem__(ListObj *self, IntObj *index);

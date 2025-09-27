@@ -1,6 +1,7 @@
 #include "list.h"
 #include <assert.h>
 #include <stdarg.h>
+#include <stdlib.h>
 
 ListObj *build_list(int n, ...) {
     ListObj *self = malloc(sizeof(ListObj));
@@ -21,7 +22,7 @@ IntObj *list__len__(ListObj *self) {
     return result;
 }
 
-void *list__get_item__(ListObj *self, IntObj *index) {
+void *list__getitem__(ListObj *self, IntObj *index) {
     assert(index->value < self->length && index->value >= 0); // TODO: currently doesn't support negative indexes
     return self->items[index->value];
 }

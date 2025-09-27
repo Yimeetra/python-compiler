@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -49,6 +51,9 @@ class Source:
     def __repr__(self) -> str:
         return f"{self.type.name}({self.value})"
 
+    def copy(self) -> Source:
+        return Source(self.type, self.value)
+
 
 @dataclass
 class ThreeAddressCode:
@@ -86,3 +91,14 @@ class ThreeAddressCode:
                 return (
                     f"{self.dest_type} {self.dest} := {self.arg1} {self.op} {self.arg2}"
                 )
+
+    def copy(self) -> ThreeAddressCode:
+        return ThreeAddressCode(
+            self.op,
+            self.arg1.copy() if self.arg1 else None,
+            self.arg2.copy() if self.arg2 else None,
+            self.dest.copy() if self.dest else None,
+            self.dest_type,
+            self.arg1_type,
+            self.arg2_type,
+        )

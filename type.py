@@ -15,6 +15,8 @@ class BuiltinTypesEnum(Enum):
     list = auto()
     tuple = auto()
 
+    iterator = auto()
+
     function = auto()
 
 

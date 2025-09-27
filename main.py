@@ -19,16 +19,16 @@ def list__str__(self):
 
 
 def main() -> None:
-    a = (69, 420, 1, 2, "Hello, world!")
+    # a = [69, 420, 1, 2]
+    # print(list__str__(a))
 
-    print(a[0])
-    print(a[1])
-    print(a[2])
-    print(a[3])
-    print(a[4])
-
-    b = ["foo", "bar"]
-    print(list__str__(b))
+    a = ("a", "b", "c", "d", "e")
+    a_iter = iter(a)
+    print(next(a_iter))
+    print(next(a_iter))
+    print(next(a_iter))
+    print(next(a_iter))
+    print(next(a_iter))
 
 
 main()

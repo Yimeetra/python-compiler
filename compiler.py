@@ -18,8 +18,11 @@ EMIT_IR = True
 
 
 def type_has_method(type: Type, method: str) -> bool:
-    type_copy = Type(type.name)
+    type_copy = Type(type.name, type.sub_types)
     methods = type_methods.get(type_copy)
+    if not methods:
+        type_copy.sub_types = ()
+        methods = type_methods.get(type_copy)
     if not methods:
         return False
     if not methods.get(method):
@@ -72,14 +75,65 @@ class BuiltInMethodMapFunction(Function):
             )
 
 
+class BuiltInIterFunction(Function):
+    def generate_function_name(self) -> str:
+        return f"{self.arg_types[0].name}__iter__"
+
+    def validate_args(self, input_arg_types):
+        if type_has_method(input_arg_types[0], "__iter__"):
+            if len(set(input_arg_types[0].sub_types)) > 1:
+                raise Exception("Iterators support only containers with one type.")
+            self.arg_types = input_arg_types
+        else:
+            raise Exception(
+                f"Type '{input_arg_types[0]}' doesn't implement method '__iter__'"
+            )
+
+    def get_return_type(self):
+        return Type.from_builtin(
+            BuiltinTypesEnum.iterator, sub_types=(self.arg_types[0],)
+        )
+
+
+class BuiltInNextFunction(Function):
+    def generate_function_name(self) -> str:
+        return f"{self.arg_types[0].sub_types[0].name}_{self.arg_types[0].name}__next__"
+
+    def validate_args(self, input_arg_types: tuple[Type]):
+        type_copy = Type(input_arg_types[0].name, input_arg_types[0].sub_types)
+        if type_copy.sub_types:
+            if type_copy.sub_types[0].sub_types:
+                type_copy.sub_types = (Type(type_copy.sub_types[0].name),)
+                type_copy.sub_types[0].sub_types = ()
+
+        if type_has_method(type_copy, "__next__"):
+            self.arg_types = input_arg_types
+        else:
+            raise Exception(
+                f"Type '{input_arg_types[0]}' doesn't implement method '__next__'"
+            )
+
+    def get_return_type(self):
+        return self.arg_types[0].sub_types[0].sub_types[0]
+
+
 class BuiltInMethod(Function):
     def generate_function_name(self) -> str:
-        return self.base_name
+        return (
+            f"{self.arg_types[0].sub_types[0].name if self.arg_types[0].sub_types else ''}"
+            + f"{'_' if self.arg_types[0].sub_types else ''}"
+            + f"{self.arg_types[0].name}{self.base_name}"
+        )
+
+
+class BuiltInDoubleMethod(Function):
+    def generate_function_name(self) -> str:
+        return f"{self.arg_types[0].sub_types[0].name}_{self.arg_types[0].name}{self.base_name}"
 
 
 class GetItemMethod(Function):
     def generate_function_name(self) -> str:
-        return self.base_name
+        return f"{self.arg_types[0].name}__getitem__"
 
     def get_return_type(self):
         return self.arg_types[0].sub_types[0]
@@ -98,6 +152,12 @@ builtin_functions: dict[str, Function] = {
     ),
     "len": (
         BuiltInMethodMapFunction("len", (), (Type.from_builtin(BuiltinTypesEnum.int)))
+    ),
+    "iter": (
+        BuiltInIterFunction("iter", (), (Type.from_builtin(BuiltinTypesEnum.iterator)))
+    ),
+    "next": (
+        BuiltInNextFunction("next", (), (Type.from_builtin(BuiltinTypesEnum.unknown)))
     ),
     "id": (
         BuiltInFunction(
@@ -206,17 +266,53 @@ list_methods: dict[str, Function] = {
         (Type.from_builtin(BuiltinTypesEnum.list),),
         Type.from_builtin(BuiltinTypesEnum.unknown),
     ),
+    "__iter__": BuiltInMethod(
+        "__iter__",
+        (Type.from_builtin(BuiltinTypesEnum.list),),
+        Type.from_builtin(BuiltinTypesEnum.iterator),
+    ),
 }
 
 tuple_methods: dict[str, Function] = {
     "__len__": BuiltInMethod(
         "__len__",
-        (Type.from_builtin(BuiltinTypesEnum.list),),
+        (Type.from_builtin(BuiltinTypesEnum.tuple),),
         Type.from_builtin(BuiltinTypesEnum.int),
     ),
     "__getitem__": GetItemMethod(
         "__getitem__",
-        (Type.from_builtin(BuiltinTypesEnum.list),),
+        (Type.from_builtin(BuiltinTypesEnum.tuple),),
+        Type.from_builtin(BuiltinTypesEnum.unknown),
+    ),
+    "__iter__": BuiltInMethod(
+        "__iter__",
+        (Type.from_builtin(BuiltinTypesEnum.tuple),),
+        Type.from_builtin(BuiltinTypesEnum.iterator),
+    ),
+}
+
+list_iterator_methods: dict[str, Function] = {
+    "__next__": BuiltInMethod(
+        "__next__",
+        (
+            Type.from_builtin(
+                BuiltinTypesEnum.iterator,
+                sub_types=(Type.from_builtin(BuiltinTypesEnum.list),),
+            ),
+        ),
+        Type.from_builtin(BuiltinTypesEnum.unknown),
+    ),
+}
+
+tuple_iterator_methods: dict[str, Function] = {
+    "__next__": BuiltInMethod(
+        "__next__",
+        (
+            Type.from_builtin(
+                BuiltinTypesEnum.iterator,
+                sub_types=(Type.from_builtin(BuiltinTypesEnum.tuple),),
+            ),
+        ),
         Type.from_builtin(BuiltinTypesEnum.unknown),
     ),
 }
@@ -226,6 +322,13 @@ type_methods: dict[Type, dict[str, Function]] = {
     Type.from_builtin(BuiltinTypesEnum.str): str_methods,
     Type.from_builtin(BuiltinTypesEnum.list): list_methods,
     Type.from_builtin(BuiltinTypesEnum.tuple): tuple_methods,
+    Type.from_builtin(
+        BuiltinTypesEnum.iterator, sub_types=(Type.from_builtin(BuiltinTypesEnum.list),)
+    ): list_iterator_methods,
+    Type.from_builtin(
+        BuiltinTypesEnum.iterator,
+        sub_types=(Type.from_builtin(BuiltinTypesEnum.tuple),),
+    ): tuple_iterator_methods,
 }
 
 obj_name_to_type: dict[str, Type] = {
@@ -339,9 +442,9 @@ def emit_const_obj(env_name: str, obj, const_n: int):
             f.write(".values_p: dq .value0_p\n")
             f.write(f".length: dq {len(obj)}\n")
             for i, _ in enumerate(obj):
-                f.write(f".value{i}_p: dq .value{i}_CONST{const_n}\n")
+                f.write(f".value{i}_p: dq value{i}_CONST{const_n}\n")
             for i, item in enumerate(obj):
-                f.write(emit_const_obj(f".value{i}", item, const_n))
+                f.write(emit_const_obj(f"value{i}", item, const_n))
         case None:
             pass
         case _:
@@ -719,7 +822,7 @@ class Compiler:
 
         for type, methods in type_methods.items():
             for method_name, method in methods.items():
-                f.write(f"extern {type.name}{method.generate_function_name()}\n")
+                f.write(f"extern {method.generate_function_name()}\n")
 
         f.write("section .text\n")
 

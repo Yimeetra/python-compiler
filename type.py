@@ -16,6 +16,8 @@ class BuiltinTypesEnum(Enum):
     tuple = auto()
 
     iterator = auto()
+    list_iterator = auto()
+    tuple_iterator = auto()
 
     function = auto()
 
@@ -23,11 +25,11 @@ class BuiltinTypesEnum(Enum):
 @dataclass(unsafe_hash=True)
 class Type:
     name: str
-    sub_types: tuple[Type, ...] = field(default_factory=tuple)
+    sub_types: tuple[Type, ...] = field(default_factory=tuple, compare=False)
 
     @staticmethod
     def from_builtin(
-        builtin: BuiltinTypesEnum, sub_types: tuple[Type] | None = None
+        builtin: BuiltinTypesEnum, sub_types: tuple[Type, ...] | None = None
     ) -> Type:
         return Type(builtin.name, sub_types or ())
 

@@ -5,30 +5,16 @@ if __name__ != "__main__":
         _print("\n")
 
 
-def list__str__(self):
-    i = 0
-    s = "["
-    l = len(self)
-
-    while i < l - 1:
-        s += str(self[i]) + ", "
-        i += 1
-    s += str(self[i]) + "]"
-
-    return s
-
-
 def main() -> None:
-    # a = [69, 420, 1, 2]
-    # print(list__str__(a))
-
-    a = ("a", "b", "c", "d", "e")
+    a = (1, 2, 3, "Hello")
     a_iter = iter(a)
     print(next(a_iter))
     print(next(a_iter))
     print(next(a_iter))
     print(next(a_iter))
-    print(next(a_iter))
+
+    print(a[0])
+    print(a[3])
 
 
 main()

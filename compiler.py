@@ -3,7 +3,7 @@ from __future__ import annotations
 import dis
 import io
 from types import CodeType
-from typing import Iterable
+from typing import Iterable, Callable
 
 import more_itertools
 import itertools
@@ -37,8 +37,10 @@ args_to_regs_map = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"]
 class Function:
     base_name: str
     arg_types: tuple[Type, ...]
-    _return_type: Type = field(
-        hash=False, compare=False, default=Type.from_builtin(BuiltinTypesEnum.unknown)
+    _return_type_getter: Callable[[list[Type]], Type] = field(
+        hash=False,
+        compare=False,
+        default=lambda x: Type.from_builtin(BuiltinTypesEnum.unknown),
     )
 
     def generate_function_name(self) -> str:
@@ -54,7 +56,7 @@ class Function:
                 )
 
     def get_return_type(self):
-        return self._return_type
+        return self._return_type_getter(self.arg_types)
 
 
 class BuiltInFunction(Function):
@@ -62,7 +64,7 @@ class BuiltInFunction(Function):
         return self.base_name
 
 
-class BuiltInMethodMapFunction(Function):
+class DunderWrapperFunction(Function):
     def generate_function_name(self) -> str:
         return f"{self.arg_types[0].name}__{self.base_name}__"
 
@@ -74,47 +76,10 @@ class BuiltInMethodMapFunction(Function):
                 f"Type '{input_arg_types[0]}' doesn't implement method '__{self.base_name}__'"
             )
 
-
-class BuiltInIterFunction(Function):
-    def generate_function_name(self) -> str:
-        return f"{self.arg_types[0].name}__iter__"
-
-    def validate_args(self, input_arg_types):
-        if type_has_method(input_arg_types[0], "__iter__"):
-            if len(set(input_arg_types[0].sub_types)) > 1:
-                raise Exception("Iterators support only containers with one type.")
-            self.arg_types = input_arg_types
-        else:
-            raise Exception(
-                f"Type '{input_arg_types[0]}' doesn't implement method '__iter__'"
-            )
-
     def get_return_type(self):
-        return Type.from_builtin(
-            BuiltinTypesEnum.iterator, sub_types=(self.arg_types[0],)
-        )
-
-
-class BuiltInNextFunction(Function):
-    def generate_function_name(self) -> str:
-        return f"{self.arg_types[0].sub_types[0].name}_{self.arg_types[0].name}__next__"
-
-    def validate_args(self, input_arg_types: tuple[Type]):
-        type_copy = Type(input_arg_types[0].name, input_arg_types[0].sub_types)
-        if type_copy.sub_types:
-            if type_copy.sub_types[0].sub_types:
-                type_copy.sub_types = (Type(type_copy.sub_types[0].name),)
-                type_copy.sub_types[0].sub_types = ()
-
-        if type_has_method(type_copy, "__next__"):
-            self.arg_types = input_arg_types
-        else:
-            raise Exception(
-                f"Type '{input_arg_types[0]}' doesn't implement method '__next__'"
-            )
-
-    def get_return_type(self):
-        return self.arg_types[0].sub_types[0].sub_types[0]
+        method = type_methods[self.arg_types[0]][f"__{self.base_name}__"]
+        method.arg_types = self.arg_types
+        return method.get_return_type()
 
 
 class BuiltInMethod(Function):
@@ -126,51 +91,46 @@ class BuiltInMethod(Function):
         )
 
 
-class BuiltInDoubleMethod(Function):
-    def generate_function_name(self) -> str:
-        return f"{self.arg_types[0].sub_types[0].name}_{self.arg_types[0].name}{self.base_name}"
-
-
-class GetItemMethod(Function):
-    def generate_function_name(self) -> str:
-        return f"{self.arg_types[0].name}__getitem__"
-
-    def get_return_type(self):
-        return self.arg_types[0].sub_types[0]
-
-
 builtin_functions: dict[str, Function] = {
     "_print": (
         BuiltInFunction(
             "_print",
             (Type.from_builtin(BuiltinTypesEnum.str),),
-            Type.from_builtin(BuiltinTypesEnum.none),
+            lambda _: Type.from_builtin(BuiltinTypesEnum.none),
         )
     ),
     "str": (
-        BuiltInMethodMapFunction("str", (), (Type.from_builtin(BuiltinTypesEnum.str)))
+        DunderWrapperFunction(
+            "str", (), lambda _: Type.from_builtin(BuiltinTypesEnum.str)
+        )
     ),
     "len": (
-        BuiltInMethodMapFunction("len", (), (Type.from_builtin(BuiltinTypesEnum.int)))
+        DunderWrapperFunction(
+            "len", (), lambda _: Type.from_builtin(BuiltinTypesEnum.int)
+        )
     ),
     "iter": (
-        BuiltInIterFunction("iter", (), (Type.from_builtin(BuiltinTypesEnum.iterator)))
+        DunderWrapperFunction(
+            "iter", (), lambda _: Type.from_builtin(BuiltinTypesEnum.iterator)
+        )
     ),
     "next": (
-        BuiltInNextFunction("next", (), (Type.from_builtin(BuiltinTypesEnum.unknown)))
+        DunderWrapperFunction(
+            "next", (), lambda _: Type.from_builtin(BuiltinTypesEnum.unknown)
+        )
     ),
     "id": (
         BuiltInFunction(
             "id",
             (Type.from_builtin(BuiltinTypesEnum.any),),
-            Type.from_builtin(BuiltinTypesEnum.int),
+            lambda _: Type.from_builtin(BuiltinTypesEnum.int),
         )
     ),
 }
 
 
 def binop_function(name: str, arg1: Type, arg2: Type, return_type: Type) -> Function:
-    return BuiltInMethod(name, (arg1, arg2), return_type)
+    return BuiltInMethod(name, (arg1, arg2), lambda _: return_type)
 
 
 int_methods: dict[str, Function] = {
@@ -237,7 +197,7 @@ int_methods: dict[str, Function] = {
     "__str__": BuiltInMethod(
         "__str__",
         (Type.from_builtin(BuiltinTypesEnum.int),),
-        Type.from_builtin(BuiltinTypesEnum.str),
+        lambda _: Type.from_builtin(BuiltinTypesEnum.str),
     ),
 }
 
@@ -251,7 +211,7 @@ str_methods: dict[str, Function] = {
     "__str__": BuiltInMethod(
         "__str__",
         (Type.from_builtin(BuiltinTypesEnum.str),),
-        Type.from_builtin(BuiltinTypesEnum.str),
+        lambda _: Type.from_builtin(BuiltinTypesEnum.str),
     ),
 }
 
@@ -259,17 +219,22 @@ list_methods: dict[str, Function] = {
     "__len__": BuiltInMethod(
         "__len__",
         (Type.from_builtin(BuiltinTypesEnum.list),),
-        Type.from_builtin(BuiltinTypesEnum.int),
+        lambda _: Type.from_builtin(BuiltinTypesEnum.int),
     ),
-    "__getitem__": GetItemMethod(
+    "__getitem__": BuiltInMethod(
         "__getitem__",
         (Type.from_builtin(BuiltinTypesEnum.list),),
-        Type.from_builtin(BuiltinTypesEnum.unknown),
+        lambda self_types: self_types[0].sub_types[0],
     ),
     "__iter__": BuiltInMethod(
         "__iter__",
         (Type.from_builtin(BuiltinTypesEnum.list),),
-        Type.from_builtin(BuiltinTypesEnum.iterator),
+        lambda self_types: Type.from_builtin(
+            BuiltinTypesEnum.list_iterator,
+            sub_types=(
+                self_types[0].sub_types[0],
+            ),  # TODO: temporarily return type is based on first element type
+        ),
     ),
 }
 
@@ -277,43 +242,42 @@ tuple_methods: dict[str, Function] = {
     "__len__": BuiltInMethod(
         "__len__",
         (Type.from_builtin(BuiltinTypesEnum.tuple),),
-        Type.from_builtin(BuiltinTypesEnum.int),
+        lambda _: Type.from_builtin(BuiltinTypesEnum.int),
     ),
-    "__getitem__": GetItemMethod(
+    "__getitem__": BuiltInMethod(
         "__getitem__",
         (Type.from_builtin(BuiltinTypesEnum.tuple),),
-        Type.from_builtin(BuiltinTypesEnum.unknown),
+        lambda self_types: self_types[0].sub_types[0],
     ),
     "__iter__": BuiltInMethod(
         "__iter__",
         (Type.from_builtin(BuiltinTypesEnum.tuple),),
-        Type.from_builtin(BuiltinTypesEnum.iterator),
+        lambda self_types: Type.from_builtin(
+            BuiltinTypesEnum.tuple_iterator,
+            sub_types=(
+                self_types[0].sub_types[0],
+            ),  # TODO: temporarily return type is based on first element type
+        ),
     ),
 }
 
 list_iterator_methods: dict[str, Function] = {
     "__next__": BuiltInMethod(
         "__next__",
-        (
-            Type.from_builtin(
-                BuiltinTypesEnum.iterator,
-                sub_types=(Type.from_builtin(BuiltinTypesEnum.list),),
-            ),
-        ),
-        Type.from_builtin(BuiltinTypesEnum.unknown),
+        (Type.from_builtin(BuiltinTypesEnum.list_iterator),),
+        lambda self_types: self_types[0].sub_types[
+            0
+        ],  # TODO: temporarily return type is based on first element type
     ),
 }
 
 tuple_iterator_methods: dict[str, Function] = {
     "__next__": BuiltInMethod(
         "__next__",
-        (
-            Type.from_builtin(
-                BuiltinTypesEnum.iterator,
-                sub_types=(Type.from_builtin(BuiltinTypesEnum.tuple),),
-            ),
-        ),
-        Type.from_builtin(BuiltinTypesEnum.unknown),
+        (Type.from_builtin(BuiltinTypesEnum.tuple_iterator),),
+        lambda self_types: self_types[0].sub_types[
+            0
+        ],  # TODO: temporarily return type is based on first element type
     ),
 }
 
@@ -322,13 +286,8 @@ type_methods: dict[Type, dict[str, Function]] = {
     Type.from_builtin(BuiltinTypesEnum.str): str_methods,
     Type.from_builtin(BuiltinTypesEnum.list): list_methods,
     Type.from_builtin(BuiltinTypesEnum.tuple): tuple_methods,
-    Type.from_builtin(
-        BuiltinTypesEnum.iterator, sub_types=(Type.from_builtin(BuiltinTypesEnum.list),)
-    ): list_iterator_methods,
-    Type.from_builtin(
-        BuiltinTypesEnum.iterator,
-        sub_types=(Type.from_builtin(BuiltinTypesEnum.tuple),),
-    ): tuple_iterator_methods,
+    Type.from_builtin(BuiltinTypesEnum.list_iterator): list_iterator_methods,
+    Type.from_builtin(BuiltinTypesEnum.tuple_iterator): tuple_iterator_methods,
 }
 
 obj_name_to_type: dict[str, Type] = {
@@ -785,6 +744,8 @@ class Compiler:
                     )
                 case Operation.GET_ITEM:
                     assert inst.arg1 is not None
+                    assert inst.arg2 is not None
+                    assert isinstance(inst.arg2.value, int)
                     container_type = get_type_of_source(inst.arg1, env)
                     index_type = get_type_of_source(inst.arg2, env)
 
@@ -915,7 +876,7 @@ class Compiler:
         curr_function = Function(
             env.code_obj.co_name,
             arg_types,
-            Type.from_builtin(BuiltinTypesEnum.unknown),
+            lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
         )
 
         function_name = curr_function.generate_function_name()
@@ -994,7 +955,7 @@ class Compiler:
                         Function(
                             inst.arg1.value,
                             tuple(last_arg_types),
-                            Type.from_builtin(BuiltinTypesEnum.unknown),
+                            lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
                         ),
                     )
 

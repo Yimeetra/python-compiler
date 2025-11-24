@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from type import Type, BuiltinTypesEnum
+from typing import Union
 
 
 class SourceType(Enum):
@@ -14,22 +15,37 @@ class SourceType(Enum):
     LABEL = auto()
 
 
-class Operation(Enum):
-    ASSIGN = auto()
+@dataclass(repr=False)
+class Source:
+    source_type: SourceType
+    value: int | str
 
-    ARG = auto()
-    VA_ARG = auto()
-    CALL = auto()
+    def __repr__(self) -> str:
+        return f"{self.source_type.name}({self.value})"
 
-    BUILD_LIST = auto()
-    GET_ITEM = auto()
+    def copy(self) -> Source:
+        return Source(self.source_type, self.value)
 
-    GOTO_IF_FALSE = auto()
-    GOTO = auto()
-    LABEL = auto()
 
-    RETURN = auto()
+@dataclass(repr=False)
+class TypedSource:
+    source: Source
+    value_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
+    def __repr__(self) -> str:
+        return f"{self.value_type} {self.source}"
+
+    def copy(self) -> TypedSource:
+        return TypedSource(self.source, self.value_type)
+
+
+@dataclass
+class AssignOperation:
+    dest: TypedSource
+    src: TypedSource
+
+
+class BinaryOperationEnum(Enum):
     ADD = auto()
     SUB = auto()
     MUL = auto()
@@ -43,62 +59,84 @@ class Operation(Enum):
     NE = auto()
 
 
-class Source:
-    def __init__(self, type: SourceType, value: str | int = ""):
-        self.type = type
-        self.value = value
-
-    def __repr__(self) -> str:
-        return f"{self.type.name}({self.value})"
-
-    def copy(self) -> Source:
-        return Source(self.type, self.value)
+@dataclass
+class BinaryOperation:
+    binop: BinaryOperationEnum
+    dest: TypedSource
+    lhs: TypedSource
+    rhs: TypedSource
 
 
 @dataclass
-class ThreeAddressCode:
-    op: Operation
-    arg1: Source | None = None
-    arg2: Source | None = None
-    dest: Source | None = None
-    dest_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
-    arg1_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
-    arg2_type: Type = Type.from_builtin(BuiltinTypesEnum.unknown)
+class LabelOperation:
+    label: Source
 
-    def __repr__(self):
-        match self.op:
-            case Operation.ASSIGN:
-                return f"{self.dest_type} {self.dest} := {self.arg1}"
-            case Operation.ARG:
-                return f"arg {self.dest_type} {self.arg1}"
-            case Operation.CALL:
-                return f"{self.dest_type} {self.dest} := call {self.arg1}"
-            case Operation.GOTO:
-                return f"goto {self.dest}"
-            case Operation.GOTO_IF_FALSE:
-                return f"if not {self.dest_type} {self.arg1} goto {self.dest}"
-            case Operation.RETURN:
-                return f"ret {self.dest_type} {self.arg1}"
-            case Operation.LABEL:
-                return f"{self.arg1}: "
-            case Operation.VA_ARG:
-                return f"va_arg {self.dest_type} {self.arg1}"
-            case Operation.BUILD_LIST:
-                return f"build_list {self.dest_type}"
-            case Operation.GET_ITEM:
-                return f"{self.dest_type} {self.dest} := {self.arg1}[{self.arg2}]"
-            case _:
-                return (
-                    f"{self.dest_type} {self.dest} := {self.arg1} {self.op} {self.arg2}"
-                )
 
-    def copy(self) -> ThreeAddressCode:
-        return ThreeAddressCode(
-            self.op,
-            self.arg1.copy() if self.arg1 else None,
-            self.arg2.copy() if self.arg2 else None,
-            self.dest.copy() if self.dest else None,
-            self.dest_type,
-            self.arg1_type,
-            self.arg2_type,
-        )
+@dataclass
+class GotoOperation:
+    label: Source
+
+
+@dataclass
+class GotoIfFalseOperation:
+    label: Source
+    cond: TypedSource
+
+
+@dataclass
+class CallOperation:
+    target: Source
+    args: list[TypedSource]
+    dest: TypedSource
+
+
+@dataclass
+class ReturnOperation:
+    value: TypedSource
+
+
+class _Operation(Enum):
+    # ASSIGN = auto()
+
+    # ARG = auto()
+    # VA_ARG = auto()
+    # CALL = auto()
+
+    BUILD_LIST = auto()
+    GET_ITEM = auto()
+
+    # GOTO_IF_FALSE = auto()
+    # GOTO = auto()
+    # LABEL = auto()
+
+    # RETURN = auto()
+
+
+Operation = Union[
+    AssignOperation,
+    BinaryOperation,
+    LabelOperation,
+    GotoOperation,
+    GotoIfFalseOperation,
+    CallOperation,
+    ReturnOperation,
+]
+
+
+def operation_to_string(op: Operation) -> str:
+    match op:
+        case AssignOperation(dest, src):
+            return f"    {dest} = {src}"
+        case BinaryOperation(binop, dest, lhs, rhs):
+            return f"    {dest} = {lhs} {binop.name} {rhs}"
+        case LabelOperation(label):
+            return f"{label.value}:"
+        case GotoOperation(label):
+            return f"    goto {label.value}"
+        case GotoIfFalseOperation(label, cond):
+            return f"    goto {label.value} if not {cond}"
+        case CallOperation(target, args, dest):
+            return f"    call {target.value}({', '.join(map(repr, args))})"
+        case ReturnOperation(value):
+            return f"    return {value}"
+    return repr(op)

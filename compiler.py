@@ -8,7 +8,22 @@ from typing import Iterable, Callable
 import more_itertools
 import itertools
 
-from ir import ThreeAddressCode, Operation, SourceType, Source
+from ir import (
+    Operation,
+    SourceType,
+    Source,
+    TypedSource,
+    operation_to_string,
+    BinaryOperationEnum,
+    AssignOperation,
+    BinaryOperation,
+    LabelOperation,
+    GotoOperation,
+    GotoIfFalseOperation,
+    CallOperation,
+    ReturnOperation,
+)
+import ir
 from type import Type, BuiltinTypesEnum
 
 from dataclasses import dataclass, field
@@ -298,31 +313,31 @@ obj_name_to_type: dict[str, Type] = {
     "NoneType": Type.from_builtin(BuiltinTypesEnum.none),
 }
 
-op_str_to_op_type: dict[str, Operation] = {
-    "+": Operation.ADD,
-    "-": Operation.SUB,
-    "*": Operation.MUL,
-    "/": Operation.DIV,
-    "<": Operation.LT,
-    ">": Operation.GT,
-    "<=": Operation.LE,
-    ">=": Operation.GE,
-    "==": Operation.EQ,
-    "!=": Operation.NE,
+op_str_to_op_type: dict[str, BinaryOperationEnum] = {
+    "+": BinaryOperationEnum.ADD,
+    "-": BinaryOperationEnum.SUB,
+    "*": BinaryOperationEnum.MUL,
+    "/": BinaryOperationEnum.DIV,
+    "<": BinaryOperationEnum.LT,
+    ">": BinaryOperationEnum.GT,
+    "<=": BinaryOperationEnum.LE,
+    ">=": BinaryOperationEnum.GE,
+    "==": BinaryOperationEnum.EQ,
+    "!=": BinaryOperationEnum.NE,
 }
 
-op_type_to_method: dict[Operation, str] = {
-    Operation.ADD: "__add__",
-    Operation.SUB: "__sub__",
-    Operation.MUL: "__mul__",
-    Operation.DIV: "__div__",
-    Operation.LT: "__lt__",
-    Operation.GT: "__gt__",
-    Operation.LE: "__le__",
-    Operation.GE: "__ge__",
-    Operation.EQ: "__eq__",
-    Operation.NE: "__ne__",
-    Operation.GET_ITEM: "__getitem__",
+op_type_to_method: dict[BinaryOperationEnum, str] = {
+    BinaryOperationEnum.ADD: "__add__",
+    BinaryOperationEnum.SUB: "__sub__",
+    BinaryOperationEnum.MUL: "__mul__",
+    BinaryOperationEnum.DIV: "__div__",
+    BinaryOperationEnum.LT: "__lt__",
+    BinaryOperationEnum.GT: "__gt__",
+    BinaryOperationEnum.LE: "__le__",
+    BinaryOperationEnum.GE: "__ge__",
+    BinaryOperationEnum.EQ: "__eq__",
+    BinaryOperationEnum.NE: "__ne__",
+    # BinaryOperationEnum.GET_ITEM: "__getitem__",
 }
 
 
@@ -335,7 +350,7 @@ class Environment:
 
 
 def get_type_of_source(source: Source, env: Environment) -> Type:
-    match source.type:
+    match source.source_type:
         case SourceType.CONST:
             assert isinstance(source.value, int)
             obj_name: str = env.code_obj.co_consts[source.value].__class__.__name__
@@ -354,12 +369,14 @@ def get_type_of_source(source: Source, env: Environment) -> Type:
         case SourceType.TEMP:
             var_type = env.temp_type
         case _:
-            raise Exception(f"Cannot get type from SourceType {source.type.name}")
+            raise Exception(
+                f"Cannot get type from SourceType {source.source_type.name}"
+            )
     return var_type
 
 
 def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
-    match source.type:
+    match source.source_type:
         case SourceType.CONST:
             assert isinstance(source.value, int)
             return f"    lea {reg}, [{code_obj.co_name}_CONST{source.value}]\n"
@@ -375,7 +392,7 @@ def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
 
 
 def emit_reg_to_source(source: Source, code_obj: CodeType, reg: str = "rax"):
-    match source.type:
+    match source.source_type:
         case SourceType.LOCAL:
             assert isinstance(source.value, int)
             return f"    mov [rbp-{(source.value + 1) * 8}], {reg}\n"
@@ -422,7 +439,7 @@ class Compiler:
         self.output_file = open(output_file_name, "w+")
         self.local_code_objs: dict[str, CodeType] = {}
         self.function_asms: dict[Function, str] = {}
-        self.function_irs: dict[Function, list[ThreeAddressCode]] = {}
+        self.function_irs: dict[Function, list[Operation]] = {}
         self.function_envs: dict[Function, Environment] = {}
         self.fn_name_types_to_fn: dict[tuple[str, tuple[Type, ...]], Function] = {}
 
@@ -444,7 +461,7 @@ class Compiler:
         f.seek(0)
         return f.read()
 
-    def compile_ir(self, code_obj) -> list[ThreeAddressCode]:
+    def compile_ir(self, code_obj) -> list[Operation]:
         code_obj
 
         instructions = more_itertools.seekable(dis.get_instructions(code_obj))
@@ -458,15 +475,13 @@ class Compiler:
                 jump_labels[inst.argval] = f"L{next(label_iter)}"
 
         stack: list[Source] = []
-        output: list[ThreeAddressCode] = []
+        output: list[Operation] = []
 
         instructions.seek(0)
         for inst in instructions:
             label = jump_labels.get(inst.offset)
             if label:
-                output.append(
-                    ThreeAddressCode(Operation.LABEL, Source(SourceType.LABEL, label))
-                )
+                output.append(ir.LabelOperation(Source(SourceType.LABEL, label)))
             match inst.opname:
                 case "LOAD_CONST":
                     assert isinstance(inst.arg, int)
@@ -474,11 +489,13 @@ class Compiler:
                 case "STORE_FAST":
                     assert isinstance(inst.arg, int)
                     output.append(
-                        ThreeAddressCode(
-                            Operation.ASSIGN,
-                            stack.pop(),
-                            None,
-                            Source(SourceType.LOCAL, inst.arg),
+                        ir.AssignOperation(
+                            TypedSource(
+                                Source(SourceType.LOCAL, inst.arg),
+                            ),
+                            TypedSource(
+                                stack.pop(),
+                            ),
                         )
                     )
                 case "LOAD_GLOBAL":
@@ -492,28 +509,44 @@ class Compiler:
                     if "=" in inst.argrepr:
                         op_str = inst.argrepr.replace("=", "")
                         op = op_str_to_op_type[op_str]
-                        output.append(ThreeAddressCode(op, var1, var2, var1))
+                        output.append(
+                            ir.BinaryOperation(
+                                op,
+                                TypedSource(var1),
+                                TypedSource(var1),
+                                TypedSource(var2),
+                            )
+                        )
                         stack.append(Source(SourceType.LOCAL, inst.argval))
                         next(instructions)
                     else:
                         temp_var = f"t{next(var_iter)}"
                         op = op_str_to_op_type[inst.argrepr]
                         output.append(
-                            ThreeAddressCode(
-                                op, var1, var2, Source(SourceType.TEMP, temp_var)
+                            ir.BinaryOperation(
+                                op,
+                                TypedSource(Source(SourceType.TEMP, temp_var)),
+                                TypedSource(var1),
+                                TypedSource(var2),
                             )
                         )
                         stack.append(Source(SourceType.TEMP, temp_var))
                 case "CALL":
                     temp_var = f"t{next(var_iter)}"
+                    args: list[TypedSource] = []
                     for i in range(inst.argval):
-                        output.append(ThreeAddressCode(Operation.ARG, stack.pop()))
+                        args.append(TypedSource(stack.pop()))
                     output.append(
-                        ThreeAddressCode(
-                            Operation.CALL,
+                        # ThreeAddressCode(
+                        #     Operation.CALL,
+                        #     ,
+                        #     None,
+                        #     Source(SourceType.TEMP, temp_var),
+                        # )
+                        ir.CallOperation(
                             stack.pop(),
-                            None,
-                            Source(SourceType.TEMP, temp_var),
+                            args,
+                            TypedSource(Source(SourceType.TEMP, temp_var)),
                         )
                     )
                     stack.append(Source(SourceType.TEMP, temp_var))
@@ -523,83 +556,86 @@ class Compiler:
                     temp_var = f"t{next(var_iter)}"
                     op = op_str_to_op_type[inst.argrepr]
                     output.append(
-                        ThreeAddressCode(
-                            op, var1, var2, Source(SourceType.TEMP, temp_var)
+                        ir.BinaryOperation(
+                            op,
+                            TypedSource(Source(SourceType.TEMP, temp_var)),
+                            TypedSource(var1),
+                            TypedSource(var2),
                         )
                     )
                     stack.append(Source(SourceType.TEMP, temp_var))
                 case "POP_JUMP_IF_FALSE":
                     var1 = stack.pop()
                     output.append(
-                        ThreeAddressCode(
-                            Operation.GOTO_IF_FALSE,
-                            var1,
-                            None,
+                        ir.GotoIfFalseOperation(
                             Source(SourceType.LABEL, jump_labels[inst.argval]),
+                            TypedSource(var1),
                         )
                     )
                 case "POP_TOP":
                     stack.pop()
                 case "JUMP_BACKWARD":
                     output.append(
-                        ThreeAddressCode(
-                            Operation.GOTO,
-                            None,
-                            None,
+                        ir.GotoOperation(
                             Source(SourceType.LABEL, jump_labels[inst.argval]),
                         )
                     )
                 case "RETURN_CONST":
                     assert isinstance(inst.arg, int)
                     output.append(
-                        ThreeAddressCode(
-                            Operation.RETURN, Source(SourceType.CONST, inst.arg)
+                        ir.ReturnOperation(
+                            TypedSource(Source(SourceType.CONST, inst.arg)),
                         )
                     )
                 case "RETURN_VALUE":
-                    output.append(ThreeAddressCode(Operation.RETURN, stack.pop()))
+                    output.append(
+                        ir.ReturnOperation(
+                            TypedSource(stack.pop()),
+                        )
+                    )
                 case "RESUME":
                     pass
                 case "NOP":
                     pass
-                case "BUILD_LIST":
-                    assert isinstance(inst.arg, int)
-                    temp_var = f"t{next(var_iter)}"
+                # case "BUILD_LIST":
+                #     assert isinstance(inst.arg, int)
+                #     temp_var = f"t{next(var_iter)}"
 
-                    for i in range(inst.arg):
-                        output.append(
-                            ThreeAddressCode(Operation.VA_ARG, arg1=stack.pop())
-                        )
-                    output.append(
-                        ThreeAddressCode(
-                            Operation.BUILD_LIST, dest=Source(SourceType.TEMP, temp_var)
-                        )
-                    )
-                    stack.append(Source(SourceType.TEMP, temp_var))
-                case "BINARY_SUBSCR":
-                    temp_var = f"t{next(var_iter)}"
-                    index = stack.pop()
-                    src = stack.pop()
-                    output.append(
-                        ThreeAddressCode(
-                            Operation.GET_ITEM,
-                            dest=Source(SourceType.TEMP, temp_var),
-                            arg1=src,
-                            arg2=index,
-                        )
-                    )
-                    stack.append(Source(SourceType.TEMP, temp_var))
+                #     for i in range(inst.arg):
+                #         output.append(
+                #             ThreeAddressCode(Operation.VA_ARG, arg1=stack.pop())
+                #         )
+                #     output.append(
+                #         ThreeAddressCode(
+                #             Operation.BUILD_LIST, dest=Source(SourceType.TEMP, temp_var)
+                #         )
+                #     )
+                #     stack.append(Source(SourceType.TEMP, temp_var))
+
+                # case "BINARY_SUBSCR":
+                #     temp_var = f"t{next(var_iter)}"
+                #     index = stack.pop()
+                #     src = stack.pop()
+                #     output.append(
+                #         ThreeAddressCode(
+                #             Operation.GET_ITEM,
+                #             dest=Source(SourceType.TEMP, temp_var),
+                #             arg1=src,
+                #             arg2=index,
+                #         )
+                #     )
+                #     stack.append(Source(SourceType.TEMP, temp_var))
                 case _:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
         return output
 
     def annotate_ir_types(
         self,
-        ir: list[ThreeAddressCode],
+        ir: list[Operation],
         env: Environment,
         arg_types: list[Type] | None,
         start_at: int = 0,
-    ) -> tuple[Type, list[ThreeAddressCode]]:
+    ) -> tuple[Type, list[Operation]]:
         arg_types = arg_types or []
         return_type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
@@ -619,31 +655,23 @@ class Compiler:
         instructions.seek(start_at)
 
         for i, inst in instructions:
-            match inst.op:
-                case Operation.ASSIGN:
-                    assert inst.arg1 is not None
-                    assert inst.dest is not None
-                    assert isinstance(inst.dest.value, int)
-
-                    inst.dest_type = get_type_of_source(inst.arg1, env)
-                    env.variable_types[env.code_obj.co_varnames[inst.dest.value]] = (
-                        inst.dest_type
+            match inst:
+                case AssignOperation(dest, src):
+                    assert isinstance(dest.source.value, int)
+                    dest.value_type = get_type_of_source(src.source, env)
+                    env.variable_types[env.code_obj.co_varnames[dest.source.value]] = (
+                        dest.value_type
                     )
-                case Operation.ARG:
-                    assert inst.arg1 is not None
+                case CallOperation(target, args, dest):
+                    assert isinstance(target.value, str)
 
-                    arg_type = get_type_of_source(inst.arg1, env)
-                    env.last_arg_types.append(arg_type)
-                    inst.dest_type = arg_type
-                case Operation.CALL:
-                    assert inst.arg1 is not None
-                    assert inst.dest is not None
-                    assert isinstance(inst.arg1.value, str)
+                    for arg in args:
+                        arg.value_type = get_type_of_source(arg.source, env)
 
-                    func = builtin_functions.get(inst.arg1.value)
+                    func = builtin_functions.get(target.value)
                     if func is None:
                         func = self.fn_name_types_to_fn.get(
-                            (inst.arg1.value, tuple(env.last_arg_types))
+                            (target.value, tuple(arg.value_type for arg in args))
                         )
 
                     if func is None:
@@ -651,54 +679,41 @@ class Compiler:
                             (i, Function(env.code_obj.co_name, tuple(arg_types)))
                         )
                         self.compile_queue.append(
-                            (0, Function(inst.arg1.value, tuple(env.last_arg_types)))
+                            (
+                                0,
+                                Function(
+                                    target.value, tuple(arg.value_type for arg in args)
+                                ),
+                            )
                         )
                         return return_type, ir
 
-                    func.validate_args(env.last_arg_types)
+                    func.validate_args(tuple(arg.value_type for arg in args))
 
-                    env.last_arg_types = []
-                    if inst.dest.type == SourceType.LOCAL:
-                        assert isinstance(inst.dest.value, int)
+                    if dest.source.source_type == SourceType.LOCAL:
+                        assert isinstance(dest.source.value, int)
                         env.variable_types[
-                            env.code_obj.co_varnames[inst.dest.value]
+                            env.code_obj.co_varnames[dest.source.value]
                         ] = func.get_return_type()
                     else:
                         env.temp_type = func.get_return_type()
 
-                    inst.arg1.value = func.generate_function_name()
-                    inst.dest_type = func.get_return_type()
-                case Operation.GOTO:
+                    target.value = func.generate_function_name()
+                    dest.value_type = func.get_return_type()
+                case GotoOperation():
                     pass
-                case Operation.GOTO_IF_FALSE:
-                    assert inst.arg1 is not None
-                    inst.dest_type = get_type_of_source(inst.arg1, env)
-                case Operation.RETURN:
-                    assert inst.arg1 is not None
-                    inst.dest_type = get_type_of_source(inst.arg1, env)
-                    return_type = inst.dest_type
-                case Operation.LABEL:
+                case GotoIfFalseOperation(label, cond):
+                    cond.value_type = get_type_of_source(cond.source, env)
+                case ReturnOperation(value):
+                    value.value_type = get_type_of_source(value.source, env)
+                    return_type = value.value_type
+                case LabelOperation():
                     pass
-                case (
-                    Operation.ADD
-                    | Operation.SUB
-                    | Operation.MUL
-                    | Operation.DIV
-                    | Operation.LT
-                    | Operation.GT
-                    | Operation.LE
-                    | Operation.GE
-                    | Operation.EQ
-                    | Operation.NE
-                ):
-                    assert inst.arg1 is not None
-                    assert inst.arg2 is not None
-                    assert inst.dest is not None
+                case BinaryOperation(binop, dest, lhs, rhs):
+                    method = op_type_to_method[binop]
 
-                    method = op_type_to_method[inst.op]
-
-                    arg1_type = get_type_of_source(inst.arg1, env)
-                    arg2_type = get_type_of_source(inst.arg2, env)
+                    arg1_type = get_type_of_source(lhs.source, env)
+                    arg2_type = get_type_of_source(rhs.source, env)
 
                     if not type_has_method(arg1_type, method):
                         raise Exception(
@@ -711,65 +726,65 @@ class Compiler:
 
                     return_type = type_methods[arg1_type][method].get_return_type()
 
-                    if inst.dest.type == SourceType.LOCAL:
-                        assert isinstance(inst.dest.value, int)
+                    if dest.source.source_type == SourceType.LOCAL:
+                        assert isinstance(dest.source.value, int)
                         env.variable_types[
-                            env.code_obj.co_varnames[inst.dest.value]
+                            env.code_obj.co_varnames[dest.source.value]
                         ] = return_type
                     else:
                         env.temp_type = return_type
-                    inst.dest_type = return_type
-                    inst.arg1_type = arg1_type
-                    inst.arg2_type = arg2_type
-                case Operation.VA_ARG:
-                    assert inst.arg1 is not None
-                    variadic_args_count += 1
-                    va_arg_type = get_type_of_source(inst.arg1, env)
-                    variadic_args_types.add(va_arg_type)
-                    inst.dest_type = va_arg_type
-                case Operation.BUILD_LIST:
-                    if len(variadic_args_types) > 1:
-                        raise Exception("Allowed lists only of one type.")
+                    dest.value_type = return_type
+                    lhs.value_type = arg1_type
+                    rhs.value_type = arg2_type
+                # case Operation.VA_ARG:
+                #     assert inst.arg1 is not None
+                #     variadic_args_count += 1
+                #     va_arg_type = get_type_of_source(inst.arg1, env)
+                #     variadic_args_types.add(va_arg_type)
+                #     inst.dest_type = va_arg_type
+                # case Operation.BUILD_LIST:
+                #     if len(variadic_args_types) > 1:
+                #         raise Exception("Allowed lists only of one type.")
 
-                    if len(variadic_args_types) != 0:
-                        list_type = variadic_args_types.pop()
-                    else:
-                        list_type = Type.from_builtin(BuiltinTypesEnum.none)
+                #     if len(variadic_args_types) != 0:
+                #         list_type = variadic_args_types.pop()
+                #     else:
+                #         list_type = Type.from_builtin(BuiltinTypesEnum.none)
 
-                    env.temp_type = Type.from_builtin(
-                        BuiltinTypesEnum.list, (list_type,)
-                    )
-                    inst.dest_type = Type.from_builtin(
-                        BuiltinTypesEnum.list, (list_type,)
-                    )
-                case Operation.GET_ITEM:
-                    assert inst.arg1 is not None
-                    assert inst.arg2 is not None
-                    assert isinstance(inst.arg2.value, int)
-                    container_type = get_type_of_source(inst.arg1, env)
-                    index_type = get_type_of_source(inst.arg2, env)
+                #     env.temp_type = Type.from_builtin(
+                #         BuiltinTypesEnum.list, (list_type,)
+                #     )
+                #     inst.dest_type = Type.from_builtin(
+                #         BuiltinTypesEnum.list, (list_type,)
+                #     )
+                # case Operation.GET_ITEM:
+                #     assert inst.arg1 is not None
+                #     assert inst.arg2 is not None
+                #     assert isinstance(inst.arg2.value, int)
+                #     container_type = get_type_of_source(inst.arg1, env)
+                #     index_type = get_type_of_source(inst.arg2, env)
 
-                    if (
-                        container_type.name
-                        == Type.from_builtin(BuiltinTypesEnum.tuple).name
-                    ):
-                        if inst.arg2.type != SourceType.CONST:
-                            raise Exception("Tuple index must be constant.")
+                #     if (
+                #         container_type.name
+                #         == Type.from_builtin(BuiltinTypesEnum.tuple).name
+                #     ):
+                #         if inst.arg2.type != SourceType.CONST:
+                #             raise Exception("Tuple index must be constant.")
 
-                        if index_type != Type.from_builtin(BuiltinTypesEnum.int):
-                            raise Exception("Tuple index must be 'int' type.")
+                #         if index_type != Type.from_builtin(BuiltinTypesEnum.int):
+                #             raise Exception("Tuple index must be 'int' type.")
 
-                        index = env.code_obj.co_consts[inst.arg2.value]
-                        inst.dest_type = container_type.sub_types[index]
-                        inst.arg1_type = container_type
-                        env.temp_type = container_type.sub_types[index]
-                    else:
-                        assert len(container_type.sub_types) > 0
-                        inst.dest_type = container_type.sub_types[0]
-                        inst.arg1_type = container_type
-                        env.temp_type = container_type.sub_types[0]
-                case _:
-                    raise Exception(f"Instruction {inst.op} is unimplemented")
+                #         index = env.code_obj.co_consts[inst.arg2.value]
+                #         inst.dest_type = container_type.sub_types[index]
+                #         inst.arg1_type = container_type
+                #         env.temp_type = container_type.sub_types[index]
+                #     else:
+                #         assert len(container_type.sub_types) > 0
+                #         inst.dest_type = container_type.sub_types[0]
+                #         inst.arg1_type = container_type
+                #         env.temp_type = container_type.sub_types[0]
+                # case _:
+                #     raise Exception(f"Instruction {inst.op} is unimplemented")
 
         return return_type, ir
 
@@ -793,7 +808,7 @@ class Compiler:
         main_code: CodeType | None
 
         function_name_to_env: dict[str, Environment] = {}
-        function_name_to_ir: dict[str, list[ThreeAddressCode]] = {}
+        function_name_to_ir: dict[str, list[Operation]] = {}
 
         for code in code_obj.co_consts:
             if not isinstance(code, CodeType):
@@ -811,7 +826,7 @@ class Compiler:
                 filename = code.co_name
                 with open(f"{filename}.ir", "w") as ir_f:
                     for i in ir:
-                        ir_f.write(f"{repr(i)}\n")
+                        ir_f.write(f"{operation_to_string(i)}\n")
 
         if main_code is None:
             raise Exception("Function 'main' is undefined")
@@ -837,7 +852,8 @@ class Compiler:
             if not _ir:
                 ir = function_name_to_ir[func.base_name].copy()
                 for i, inst in enumerate(ir):
-                    ir[i] = inst.copy()
+                    # ir[i] = inst.copy()
+                    ir[i] = inst
             else:
                 ir = _ir
 
@@ -855,7 +871,7 @@ class Compiler:
                 filename = func.generate_function_name()
                 with open(f"{filename}.ir", "w") as ir_f:
                     for i in ir:
-                        ir_f.write(f"{repr(i)}\n")
+                        ir_f.write(f"{operation_to_string(i)}\n")
 
         for func, ir in self.function_irs.items():
             env = self.function_envs[func]
@@ -870,7 +886,7 @@ class Compiler:
         f.write("None: dq 0\n")
         f.write(self.generate_constants(code_obj))
 
-    def compile_nasm(self, ir: list[ThreeAddressCode], env: Environment) -> str:
+    def compile_nasm(self, ir: list[Operation], env: Environment) -> str:
         arg_types = tuple(env.variable_types.values())[: env.code_obj.co_argcount]
 
         curr_function = Function(
@@ -909,51 +925,34 @@ class Compiler:
         last_arg_types: list[Type] = []
         variadic_args_count: int = 0
 
-        args: list[Source]
-
         for i, inst in instructions:
-            if inst.dest_type == Type.from_builtin(
-                BuiltinTypesEnum.unknown
-            ) and inst.op not in [
-                Operation.GOTO_IF_FALSE,
-                Operation.GOTO,
-                Operation.LABEL,
-                Operation.CALL,  # TODO: CALL is temporary
-            ]:
-                raise Exception(f"Instruction's {i} {inst.op.name} type is unknown")
+            # if inst == Type.from_builtin(
+            #     BuiltinTypesEnum.unknown
+            # ) and inst.op not in [
+            #     Operation.GOTO_IF_FALSE,
+            #     Operation.GOTO,
+            #     Operation.LABEL,
+            #     Operation.CALL,  # TODO: CALL is temporary
+            # ]:
+            #     raise Exception(f"Instruction's {i} {inst.op.name} type is unknown")
             if DEBUG:
-                f.write(f"; {inst}\n")
-            match inst.op:
-                case Operation.ASSIGN:
-                    assert inst.arg1 is not None
-                    assert inst.dest is not None
-                    assert isinstance(inst.dest.value, int)
+                f.write(f"; {operation_to_string(inst)}\n")
+            match inst:
+                case AssignOperation(dest, src):
+                    assert isinstance(dest.source.value, int)
 
-                    f.write(emit_source_to_reg(inst.arg1, env.code_obj))
-                    f.write(emit_reg_to_source(inst.dest, env.code_obj))
-                case Operation.ARG:
-                    assert inst.arg1 is not None
-
-                    args = []
-                    args.append(inst.arg1)
-                    while instructions.peek()[1].op == Operation.ARG:
-                        arg = next(instructions)[1].arg1
-                        assert arg is not None
-                        args.append(arg)
-
-                    args.reverse()
+                    f.write(emit_source_to_reg(src.source, env.code_obj))
+                    f.write(emit_reg_to_source(dest.source, env.code_obj))
+                case CallOperation(target, args, dest):
+                    assert isinstance(target.value, str)
 
                     for arg, reg in zip(args, args_to_regs_map):
-                        f.write(emit_source_to_reg(arg, env.code_obj, reg))
-                case Operation.CALL:
-                    assert inst.dest is not None
-                    assert inst.arg1 is not None
-                    assert isinstance(inst.arg1.value, str)
+                        f.write(emit_source_to_reg(arg.source, env.code_obj, reg))
 
                     func = builtin_functions.get(
-                        inst.arg1.value,
+                        target.value,
                         Function(
-                            inst.arg1.value,
+                            target.value,
                             tuple(last_arg_types),
                             lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
                         ),
@@ -965,88 +964,70 @@ class Compiler:
                     f.write(f"    call {call_function_name}\n")
                     f.write("    mov rsp, rbx\n")
 
-                    if inst.dest.type == SourceType.LOCAL:
+                    if dest.value_type == SourceType.LOCAL:
                         assert isinstance(inst.dest.value, int)
-                        f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
-                case Operation.GOTO:
-                    assert inst.dest is not None
-                    f.write(f"    jmp .{inst.dest.value}\n")
-                case Operation.GOTO_IF_FALSE:
-                    assert inst.arg1 is not None
-                    assert inst.dest is not None
-                    f.write(emit_source_to_reg(inst.arg1, env.code_obj))
+                        f.write(f"    mov [rbp-{(dest.source.value + 1) * 8}], rax\n")
+                case GotoOperation(label):
+                    f.write(f"    jmp .{label.value}\n")
+                case GotoIfFalseOperation(label, cond):
+                    f.write(emit_source_to_reg(cond.source, env.code_obj))
                     f.write("    mov rax, [rax]\n")
                     f.write("    test rax, rax\n")
-                    f.write(f"    jz .{inst.dest.value}\n")
-                case Operation.RETURN:
-                    assert inst.arg1 is not None
-
-                    f.write(emit_source_to_reg(inst.arg1, env.code_obj))
+                    f.write(f"    jz .{label.value}\n")
+                case ReturnOperation(value):
+                    f.write(emit_source_to_reg(value.source, env.code_obj))
                     f.write(f"    add rsp, {len(env.code_obj.co_varnames) * 8}\n")
                     f.write("    pop rbx\n")
                     f.write("    pop rbp\n")
                     f.write("    ret\n")
-                case Operation.LABEL:
-                    assert inst.arg1 is not None
-                    f.write(f".{inst.arg1.value}:\n")
-                case (
-                    Operation.ADD
-                    | Operation.SUB
-                    | Operation.MUL
-                    | Operation.DIV
-                    | Operation.LT
-                    | Operation.GT
-                    | Operation.LE
-                    | Operation.GE
-                    | Operation.EQ
-                    | Operation.NE
-                    | Operation.GET_ITEM
-                ):
-                    assert inst.arg1 is not None
-                    assert inst.arg2 is not None
-                    assert inst.dest is not None
-
-                    method = op_type_to_method[inst.op]
+                case LabelOperation(label):
+                    f.write(f".{label.value}:\n")
+                case BinaryOperation(binop, dest, lhs, rhs):
+                    method = op_type_to_method[binop]
 
                     f.write(
-                        emit_source_to_reg(inst.arg1, env.code_obj, args_to_regs_map[0])
+                        emit_source_to_reg(
+                            lhs.source, env.code_obj, args_to_regs_map[0]
+                        )
                     )
                     f.write(
-                        emit_source_to_reg(inst.arg2, env.code_obj, args_to_regs_map[1])
+                        emit_source_to_reg(
+                            rhs.source, env.code_obj, args_to_regs_map[1]
+                        )
                     )
                     f.write("    mov rbx, rsp\n")
                     f.write("    and rsp, -16\n")
-                    f.write(f"    call {inst.arg1_type.name}{method}\n")
+                    f.write(f"    call {lhs.value_type.name}{method}\n")
                     f.write("    mov rsp, rbx\n")
 
-                    if inst.dest.type == SourceType.LOCAL:
-                        assert isinstance(inst.dest.value, int)
-                        f.write(f"    mov [rbp-{(inst.dest.value + 1) * 8}], rax\n")
-                case Operation.VA_ARG:
-                    assert inst.arg1 is not None
+                    if dest.source.source_type == SourceType.LOCAL:
+                        assert isinstance(dest.source.value, int)
+                        f.write(f"    mov [rbp-{(dest.source.value + 1) * 8}], rax\n")
+                # case Operation.VA_ARG:
+                #     assert inst.arg1 is not None
 
-                    args = []
-                    args.append(inst.arg1)
-                    variadic_args_count += 1
-                    while instructions.peek()[1].op == Operation.VA_ARG:
-                        variadic_args_count += 1
-                        arg = next(instructions)[1].arg1
-                        assert arg is not None
-                        args.append(arg)
+                #     args = []
+                #     args.append(inst.arg1)
+                #     variadic_args_count += 1
+                #     while instructions.peek()[1].op == Operation.VA_ARG:
+                #         variadic_args_count += 1
+                #         arg = next(instructions)[1].arg1
+                #         assert arg is not None
+                #         args.append(arg)
 
-                    args.reverse()
+                #     args.reverse()
 
-                    for arg, reg in zip(args, args_to_regs_map[1:]):
-                        f.write(emit_source_to_reg(arg, env.code_obj, reg))
+                #     for arg, reg in zip(args, args_to_regs_map[1:]):
+                #         f.write(emit_source_to_reg(arg, env.code_obj, reg))
 
-                    assert inst.arg1 is not None
-                case Operation.BUILD_LIST:
-                    f.write(f"    mov rdi, {variadic_args_count}\n")
-                    f.write("    mov rbx, rsp\n")
-                    f.write("    and rsp, -16\n")
-                    f.write("    call build_list\n")
-                    f.write("    mov rsp, rbx\n")
-                    variadic_args_count = 0
+                #     assert inst.arg1 is not None
+                # case Operation.BUILD_LIST:
+                #     f.write(f"    mov rdi, {variadic_args_count}\n")
+                #     f.write("    mov rbx, rsp\n")
+                #     f.write("    and rsp, -16\n")
+                #     f.write("    call build_list\n")
+                #     f.write("    mov rsp, rbx\n")
+                #     variadic_args_count = 0
                 case _:
                     raise Exception(f"Instruction {inst.op} is unimplemented")
         f.seek(0)

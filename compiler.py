@@ -8,13 +8,16 @@ from typing import Iterable, Callable
 import more_itertools
 import itertools
 
+import sys
+import os
+
 from ir import (
     Operation,
     SourceType,
     Source,
     TypedSource,
     operation_to_string,
-    BinaryOperationEnum,
+    BinaryOperatorEnum,
     AssignOperation,
     BinaryOperation,
     LabelOperation,
@@ -22,6 +25,7 @@ from ir import (
     GotoIfFalseOperation,
     CallOperation,
     ReturnOperation,
+    GetItemOperation,
 )
 import ir
 from type import Type, BuiltinTypesEnum
@@ -313,31 +317,30 @@ obj_name_to_type: dict[str, Type] = {
     "NoneType": Type.from_builtin(BuiltinTypesEnum.none),
 }
 
-op_str_to_op_type: dict[str, BinaryOperationEnum] = {
-    "+": BinaryOperationEnum.ADD,
-    "-": BinaryOperationEnum.SUB,
-    "*": BinaryOperationEnum.MUL,
-    "/": BinaryOperationEnum.DIV,
-    "<": BinaryOperationEnum.LT,
-    ">": BinaryOperationEnum.GT,
-    "<=": BinaryOperationEnum.LE,
-    ">=": BinaryOperationEnum.GE,
-    "==": BinaryOperationEnum.EQ,
-    "!=": BinaryOperationEnum.NE,
+op_str_to_op_type: dict[str, BinaryOperatorEnum] = {
+    "+": BinaryOperatorEnum.ADD,
+    "-": BinaryOperatorEnum.SUB,
+    "*": BinaryOperatorEnum.MUL,
+    "/": BinaryOperatorEnum.DIV,
+    "<": BinaryOperatorEnum.LT,
+    ">": BinaryOperatorEnum.GT,
+    "<=": BinaryOperatorEnum.LE,
+    ">=": BinaryOperatorEnum.GE,
+    "==": BinaryOperatorEnum.EQ,
+    "!=": BinaryOperatorEnum.NE,
 }
 
-op_type_to_method: dict[BinaryOperationEnum, str] = {
-    BinaryOperationEnum.ADD: "__add__",
-    BinaryOperationEnum.SUB: "__sub__",
-    BinaryOperationEnum.MUL: "__mul__",
-    BinaryOperationEnum.DIV: "__div__",
-    BinaryOperationEnum.LT: "__lt__",
-    BinaryOperationEnum.GT: "__gt__",
-    BinaryOperationEnum.LE: "__le__",
-    BinaryOperationEnum.GE: "__ge__",
-    BinaryOperationEnum.EQ: "__eq__",
-    BinaryOperationEnum.NE: "__ne__",
-    # BinaryOperationEnum.GET_ITEM: "__getitem__",
+op_type_to_method: dict[BinaryOperatorEnum, str] = {
+    BinaryOperatorEnum.ADD: "__add__",
+    BinaryOperatorEnum.SUB: "__sub__",
+    BinaryOperatorEnum.MUL: "__mul__",
+    BinaryOperatorEnum.DIV: "__div__",
+    BinaryOperatorEnum.LT: "__lt__",
+    BinaryOperatorEnum.GT: "__gt__",
+    BinaryOperatorEnum.LE: "__le__",
+    BinaryOperatorEnum.GE: "__ge__",
+    BinaryOperatorEnum.EQ: "__eq__",
+    BinaryOperatorEnum.NE: "__ne__",
 }
 
 
@@ -432,19 +435,18 @@ def emit_const_obj(env_name: str, obj, const_n: int):
 
 
 class Compiler:
-    def __init__(self, input_file_name: str, output_file_name: str) -> None:
+    def __init__(
+        self, input_file_name: str, output_file_name: str, output_dir: str
+    ) -> None:
         self.input_file_name: str = input_file_name
         self.output_file_name: str = output_file_name
+        self.output_dir: str = output_dir
         self._label_generator = self._get_next_label()
-        self.output_file = open(output_file_name, "w+")
         self.local_code_objs: dict[str, CodeType] = {}
         self.function_asms: dict[Function, str] = {}
         self.function_irs: dict[Function, list[Operation]] = {}
         self.function_envs: dict[Function, Environment] = {}
         self.fn_name_types_to_fn: dict[tuple[str, tuple[Type, ...]], Function] = {}
-
-    def __del__(self):
-        self.output_file.close()
 
     def _get_next_label(self):
         i = 0
@@ -537,12 +539,6 @@ class Compiler:
                     for i in range(inst.argval):
                         args.append(TypedSource(stack.pop()))
                     output.append(
-                        # ThreeAddressCode(
-                        #     Operation.CALL,
-                        #     ,
-                        #     None,
-                        #     Source(SourceType.TEMP, temp_var),
-                        # )
                         ir.CallOperation(
                             stack.pop(),
                             args,
@@ -612,19 +608,18 @@ class Compiler:
                 #     )
                 #     stack.append(Source(SourceType.TEMP, temp_var))
 
-                # case "BINARY_SUBSCR":
-                #     temp_var = f"t{next(var_iter)}"
-                #     index = stack.pop()
-                #     src = stack.pop()
-                #     output.append(
-                #         ThreeAddressCode(
-                #             Operation.GET_ITEM,
-                #             dest=Source(SourceType.TEMP, temp_var),
-                #             arg1=src,
-                #             arg2=index,
-                #         )
-                #     )
-                #     stack.append(Source(SourceType.TEMP, temp_var))
+                case "BINARY_SUBSCR":
+                    temp_var = f"t{next(var_iter)}"
+                    index = stack.pop()
+                    src = stack.pop()
+                    output.append(
+                        GetItemOperation(
+                            TypedSource(Source(SourceType.TEMP, temp_var)),
+                            TypedSource(src),
+                            TypedSource(index),
+                        )
+                    )
+                    stack.append(Source(SourceType.TEMP, temp_var))
                 case _:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
         return output
@@ -658,7 +653,8 @@ class Compiler:
             match inst:
                 case AssignOperation(dest, src):
                     assert isinstance(dest.source.value, int)
-                    dest.value_type = get_type_of_source(src.source, env)
+                    src.value_type = get_type_of_source(src.source, env)
+                    dest.value_type = src.value_type
                     env.variable_types[env.code_obj.co_varnames[dest.source.value]] = (
                         dest.value_type
                     )
@@ -757,136 +753,143 @@ class Compiler:
                 #     inst.dest_type = Type.from_builtin(
                 #         BuiltinTypesEnum.list, (list_type,)
                 #     )
-                # case Operation.GET_ITEM:
-                #     assert inst.arg1 is not None
-                #     assert inst.arg2 is not None
-                #     assert isinstance(inst.arg2.value, int)
-                #     container_type = get_type_of_source(inst.arg1, env)
-                #     index_type = get_type_of_source(inst.arg2, env)
+                case GetItemOperation(dest, src, index):
+                    assert isinstance(index.source.value, int)
+                    src.value_type = get_type_of_source(src.source, env)
+                    index.value_type = get_type_of_source(index.source, env)
 
-                #     if (
-                #         container_type.name
-                #         == Type.from_builtin(BuiltinTypesEnum.tuple).name
-                #     ):
-                #         if inst.arg2.type != SourceType.CONST:
-                #             raise Exception("Tuple index must be constant.")
+                    if (
+                        src.value_type.name
+                        == Type.from_builtin(BuiltinTypesEnum.tuple).name
+                    ):
+                        if index.source.source_type != SourceType.CONST:
+                            raise Exception("Tuple index must be constant.")
 
-                #         if index_type != Type.from_builtin(BuiltinTypesEnum.int):
-                #             raise Exception("Tuple index must be 'int' type.")
+                        if index.value_type != Type.from_builtin(BuiltinTypesEnum.int):
+                            raise Exception("Tuple index must be 'int' type.")
 
-                #         index = env.code_obj.co_consts[inst.arg2.value]
-                #         inst.dest_type = container_type.sub_types[index]
-                #         inst.arg1_type = container_type
-                #         env.temp_type = container_type.sub_types[index]
-                #     else:
-                #         assert len(container_type.sub_types) > 0
-                #         inst.dest_type = container_type.sub_types[0]
-                #         inst.arg1_type = container_type
-                #         env.temp_type = container_type.sub_types[0]
-                # case _:
-                #     raise Exception(f"Instruction {inst.op} is unimplemented")
+                        i = env.code_obj.co_consts[index.source.value]
+                        dest.value_type = src.value_type.sub_types[i]
+                        env.temp_type = src.value_type.sub_types[i]
+                    else:
+                        assert len(src.value_type.sub_types) > 0
+                        dest.value_type = src.value_type.sub_types[0]
+                        env.temp_type = src.value_type.sub_types[0]
+                case _:
+                    raise Exception(f"Instruction {inst.op} is unimplemented")
 
         return return_type, ir
 
-    def compile_file(self):
-        f = self.output_file
-        f.write("BITS 64\n")
-        f.write("default rel\n")
-        f.write("extern _print\n")
-        f.write("extern id\n")
-        f.write("extern build_list\n")
+    def compile_file_nasm(self) -> None:
+        with open(
+            f"{self.output_dir.rstrip('/')}/{self.output_file_name.lstrip('/')}.asm",
+            "w+",
+        ) as f:
+            f.write("BITS 64\n")
+            f.write("default rel\n")
+            f.write("extern _print\n")
+            f.write("extern id\n")
+            f.write("extern build_list\n")
 
-        for type, methods in type_methods.items():
-            for method_name, method in methods.items():
-                f.write(f"extern {method.generate_function_name()}\n")
+            for type, methods in type_methods.items():
+                for method_name, method in methods.items():
+                    f.write(f"extern {method.generate_function_name()}\n")
 
-        f.write("section .text\n")
+            f.write("section .text\n")
 
-        with open(self.input_file_name, "r", encoding="utf-8") as _f:
-            code_obj = compile(_f.read(), self.input_file_name, "exec")
+            with open(
+                self.input_file_name,
+                "r",
+                encoding="utf-8",
+            ) as _f:
+                code_obj = compile(_f.read(), self.input_file_name, "exec")
 
-        main_code: CodeType | None
+            main_code: CodeType | None = None
 
-        function_name_to_env: dict[str, Environment] = {}
-        function_name_to_ir: dict[str, list[Operation]] = {}
+            function_name_to_ir: dict[str, list[Operation]] = {}
 
-        for code in code_obj.co_consts:
-            if not isinstance(code, CodeType):
-                continue
-            self.local_code_objs[code.co_name] = code
+            for code in code_obj.co_consts:
+                if not isinstance(code, CodeType):
+                    continue
+                self.local_code_objs[code.co_name] = code
 
-            ir = self.compile_ir(code)
+                ir = self.compile_ir(code)
 
-            function_name_to_ir[code.co_name] = ir
+                function_name_to_ir[code.co_name] = ir
 
-            if code.co_name == "main":
-                main_code = code
+                if code.co_name == "main":
+                    main_code = code
 
-            if EMIT_IR:
-                filename = code.co_name
-                with open(f"{filename}.ir", "w") as ir_f:
-                    for i in ir:
-                        ir_f.write(f"{operation_to_string(i)}\n")
+                if EMIT_IR:
+                    filename = code.co_name
+                    with open(
+                        f"{self.output_dir.rstrip('/')}/{filename}.ir",
+                        "w",
+                    ) as ir_f:
+                        for i in ir:
+                            ir_f.write(f"{operation_to_string(i)}\n")
 
-        if main_code is None:
-            raise Exception("Function 'main' is undefined")
+            if main_code is None:
+                raise Exception("Function 'main' is undefined")
 
-        self.compile_queue: list[tuple[int, Function]] = []
+            self.compile_queue: list[tuple[int, Function]] = []
 
-        self.compile_queue.append(
-            (0, Function("main", (), Type.from_builtin(BuiltinTypesEnum.none)))
-        )
-
-        while len(self.compile_queue) > 0:
-            start_at, func = self.compile_queue.pop()
-
-            _env = self.function_envs.get(func)
-            if not _env:
-                code = self.local_code_objs[func.base_name]
-                env = Environment(code)
-                self.function_envs[func] = env
-            else:
-                env = _env
-
-            _ir = self.function_irs.get(func)
-            if not _ir:
-                ir = function_name_to_ir[func.base_name].copy()
-                for i, inst in enumerate(ir):
-                    # ir[i] = inst.copy()
-                    ir[i] = inst
-            else:
-                ir = _ir
-
-            return_type, ir = self.annotate_ir_types(
-                ir, env, list(func.arg_types), start_at
+            self.compile_queue.append(
+                (
+                    0,
+                    Function(
+                        "main", (), lambda _: Type.from_builtin(BuiltinTypesEnum.none)
+                    ),
+                )
             )
 
-            func._return_type = return_type
+            while len(self.compile_queue) > 0:
+                start_at, func = self.compile_queue.pop()
 
-            self.fn_name_types_to_fn[(func.base_name, func.arg_types)] = func
-            self.function_irs[func] = ir
-            self.function_envs[func] = env
+                _env = self.function_envs.get(func)
+                if not _env:
+                    code = self.local_code_objs[func.base_name]
+                    env = Environment(code)
+                    self.function_envs[func] = env
+                else:
+                    env = _env
 
-            if EMIT_IR:
-                filename = func.generate_function_name()
-                with open(f"{filename}.ir", "w") as ir_f:
-                    for i in ir:
-                        ir_f.write(f"{operation_to_string(i)}\n")
+                _ir = self.function_irs.get(func)
+                if not _ir:
+                    ir = function_name_to_ir[func.base_name].copy()
+                else:
+                    ir = _ir
 
-        for func, ir in self.function_irs.items():
-            env = self.function_envs[func]
-            self.compile_nasm(ir, env)
+                return_type, ir = self.annotate_ir_types(
+                    ir, env, list(func.arg_types), start_at
+                )
 
-        for _, asm in self.function_asms.items():
-            f.write(asm)
+                self.fn_name_types_to_fn[(func.base_name, func.arg_types)] = func
+                self.function_irs[func] = ir
+                self.function_envs[func] = env
 
-        f.write("section .data\n")
+                if EMIT_IR:
+                    filename = func.generate_function_name()
+                    with open(
+                        f"{self.output_dir.rstrip('/')}/{filename}.ir", "w"
+                    ) as ir_f:
+                        for i in ir:
+                            ir_f.write(f"{operation_to_string(i)}\n")
 
-        f.write("global None\n")
-        f.write("None: dq 0\n")
-        f.write(self.generate_constants(code_obj))
+            for func, ir in self.function_irs.items():
+                env = self.function_envs[func]
+                self.compile_ir_nasm(ir, env)
 
-    def compile_nasm(self, ir: list[Operation], env: Environment) -> str:
+            for _, asm in self.function_asms.items():
+                f.write(asm)
+
+            f.write("section .data\n")
+
+            f.write("global None\n")
+            f.write("None: dq 0\n")
+            f.write(self.generate_constants(code_obj))
+
+    def compile_ir_nasm(self, ir: list[Operation], env: Environment) -> str:
         arg_types = tuple(env.variable_types.values())[: env.code_obj.co_argcount]
 
         curr_function = Function(
@@ -896,7 +899,6 @@ class Compiler:
         )
 
         function_name = curr_function.generate_function_name()
-        base_function_name = curr_function.base_name
 
         f = io.StringIO()
 
@@ -921,9 +923,6 @@ class Compiler:
             f.write(f"    mov [rbp-8*{i + 1}], {args_to_regs_map[i]}\n")
 
         instructions = more_itertools.seekable(enumerate(ir))
-
-        last_arg_types: list[Type] = []
-        variadic_args_count: int = 0
 
         for i, inst in instructions:
             # if inst == Type.from_builtin(
@@ -953,7 +952,7 @@ class Compiler:
                         target.value,
                         Function(
                             target.value,
-                            tuple(last_arg_types),
+                            tuple(),
                             lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
                         ),
                     )
@@ -964,9 +963,7 @@ class Compiler:
                     f.write(f"    call {call_function_name}\n")
                     f.write("    mov rsp, rbx\n")
 
-                    if dest.value_type == SourceType.LOCAL:
-                        assert isinstance(inst.dest.value, int)
-                        f.write(f"    mov [rbp-{(dest.source.value + 1) * 8}], rax\n")
+                    f.write(emit_reg_to_source(dest.source, env.code_obj))
                 case GotoOperation(label):
                     f.write(f"    jmp .{label.value}\n")
                 case GotoIfFalseOperation(label, cond):
@@ -1000,9 +997,24 @@ class Compiler:
                     f.write(f"    call {lhs.value_type.name}{method}\n")
                     f.write("    mov rsp, rbx\n")
 
-                    if dest.source.source_type == SourceType.LOCAL:
-                        assert isinstance(dest.source.value, int)
-                        f.write(f"    mov [rbp-{(dest.source.value + 1) * 8}], rax\n")
+                    f.write(emit_reg_to_source(dest.source, env.code_obj))
+                case GetItemOperation(dest, src, index):
+                    f.write(
+                        emit_source_to_reg(
+                            src.source, env.code_obj, args_to_regs_map[0]
+                        )
+                    )
+                    f.write(
+                        emit_source_to_reg(
+                            index.source, env.code_obj, args_to_regs_map[1]
+                        )
+                    )
+                    f.write("    mov rbx, rsp\n")
+                    f.write("    and rsp, -16\n")
+                    f.write(f"    call {src.value_type.name}__getitem__\n")
+                    f.write("    mov rsp, rbx\n")
+
+                    f.write(emit_reg_to_source(dest.source, env.code_obj))
                 # case Operation.VA_ARG:
                 #     assert inst.arg1 is not None
 
@@ -1029,18 +1041,29 @@ class Compiler:
                 #     f.write("    mov rsp, rbx\n")
                 #     variadic_args_count = 0
                 case _:
-                    raise Exception(f"Instruction {inst.op} is unimplemented")
+                    raise Exception(f"Instruction {inst} is unimplemented")
         f.seek(0)
         self.function_asms[curr_function] = f.read()
         return function_name
 
 
 if __name__ == "__main__":
-    compiler = Compiler("main.py", "main.asm")
+    filename = sys.argv[1]
+    output = sys.argv[2]
+    build_dir = sys.argv[3]
 
-    with open(compiler.input_file_name, "r", encoding="utf-8") as _f:
-        code_obj = compile(_f.read(), compiler.input_file_name, "exec")
+    compiler = Compiler(filename, output, build_dir)
+    compiler.compile_file_nasm()
 
-    dis.dis(code_obj)
+    c_sources = ["std.c", "int.c", "str.c", "list.c", "tuple.c"]
 
-    compiler.compile_file()
+    os.system(f"nasm -f elf64 {build_dir}/{output}.asm -o {build_dir}/{output}.o -g")
+
+    for file in c_sources:
+        os.system(f"gcc -c {file} -o {build_dir}/{file.removesuffix('.c')}.o -g")
+
+    objs = [f"{build_dir}/{output}.o"] + [
+        f"{build_dir}/{file.removesuffix('.c')}.o" for file in c_sources
+    ]
+
+    os.system(f"gcc -o {build_dir}/{output} {' '.join(objs)} -lm -no-pie")

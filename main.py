@@ -6,13 +6,11 @@ if __name__ != "__main__":
 
 
 def main() -> None:
-    a = 0
-    b = 1
-    while a + b < 1000:
-        print(a)
-        c = a + b
-        b = a
-        a = c
+    a = ("foo", "bar", "baz")
+
+    print(a[0])
+    print(a[1])
+    print(a[2])
 
 
 main()

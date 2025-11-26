@@ -45,7 +45,7 @@ class AssignOperation:
     src: TypedSource
 
 
-class BinaryOperationEnum(Enum):
+class BinaryOperatorEnum(Enum):
     ADD = auto()
     SUB = auto()
     MUL = auto()
@@ -61,7 +61,7 @@ class BinaryOperationEnum(Enum):
 
 @dataclass
 class BinaryOperation:
-    binop: BinaryOperationEnum
+    binop: BinaryOperatorEnum
     dest: TypedSource
     lhs: TypedSource
     rhs: TypedSource
@@ -95,21 +95,11 @@ class ReturnOperation:
     value: TypedSource
 
 
-class _Operation(Enum):
-    # ASSIGN = auto()
-
-    # ARG = auto()
-    # VA_ARG = auto()
-    # CALL = auto()
-
-    BUILD_LIST = auto()
-    GET_ITEM = auto()
-
-    # GOTO_IF_FALSE = auto()
-    # GOTO = auto()
-    # LABEL = auto()
-
-    # RETURN = auto()
+@dataclass
+class GetItemOperation:
+    dest: TypedSource
+    src: TypedSource
+    index: TypedSource
 
 
 Operation = Union[
@@ -120,6 +110,7 @@ Operation = Union[
     GotoIfFalseOperation,
     CallOperation,
     ReturnOperation,
+    GetItemOperation,
 ]
 
 
@@ -139,4 +130,6 @@ def operation_to_string(op: Operation) -> str:
             return f"    call {target.value}({', '.join(map(repr, args))})"
         case ReturnOperation(value):
             return f"    return {value}"
+        case GetItemOperation(dest, src, index):
+            return f"    {dest} = {src}[{index}]"
     return repr(op)

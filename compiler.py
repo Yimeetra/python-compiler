@@ -441,6 +441,10 @@ def emit_const_obj(env_name: str, obj, const_n: int):
     return f.getvalue()
 
 
+def emit_call(function_name: str) -> str:
+    return f"    call {function_name}\n"
+
+
 class Compiler:
     def __init__(
         self, input_file_name: str, output_file_name: str, output_dir: str
@@ -670,7 +674,7 @@ class Compiler:
                 case AssignOperation(dest, src):
                     assert isinstance(dest.source.value, int)
                     src.value_type = get_type_of_source(src.source, function.env)
-                    dest.value_type = src.value_type
+                    dest.value_type = src.value_type.copy()
                     function.env.variable_types[
                         function.env.code_obj.co_varnames[dest.source.value]
                     ] = dest.value_type
@@ -893,7 +897,9 @@ class Compiler:
         f.write("    push rbp\n")
         f.write("    push rbx\n")
         f.write("    mov rbp, rsp\n")
-        f.write(f"    sub rsp, {len(function.env.code_obj.co_varnames) * 8}\n")
+        f.write(
+            f"    sub rsp, {len(function.env.code_obj.co_varnames) * 8 + 15 & -16}\n"
+        )
 
         for i in range(function.env.code_obj.co_argcount):
             f.write(f"    mov [rbp-8*{i + 1}], {args_to_regs_map[i]}\n")
@@ -936,10 +942,7 @@ class Compiler:
                     )
 
                     call_function_name = func.generate_function_name()
-                    f.write("    mov rbx, rsp\n")
-                    f.write("    and rsp, -16\n")
-                    f.write(f"    call {call_function_name}\n")
-                    f.write("    mov rsp, rbx\n")
+                    f.write(emit_call(call_function_name))
 
                     f.write(emit_reg_to_source(dest.source, function.env.code_obj))
                 case GotoOperation(label):
@@ -952,7 +955,7 @@ class Compiler:
                 case ReturnOperation(value):
                     f.write(emit_source_to_reg(value.source, function.env.code_obj))
                     f.write(
-                        f"    add rsp, {len(function.env.code_obj.co_varnames) * 8}\n"
+                        f"    add rsp, {len(function.env.code_obj.co_varnames) * 8 + 15 & -16}\n"
                     )
                     f.write("    pop rbx\n")
                     f.write("    pop rbp\n")
@@ -972,10 +975,7 @@ class Compiler:
                             rhs.source, function.env.code_obj, args_to_regs_map[1]
                         )
                     )
-                    f.write("    mov rbx, rsp\n")
-                    f.write("    and rsp, -16\n")
-                    f.write(f"    call {lhs.value_type.name}{method}\n")
-                    f.write("    mov rsp, rbx\n")
+                    f.write(emit_call(f"{lhs.value_type.name}{method}"))
 
                     f.write(emit_reg_to_source(dest.source, function.env.code_obj))
                 case GetItemOperation(dest, src, index):
@@ -989,11 +989,7 @@ class Compiler:
                             index.source, function.env.code_obj, args_to_regs_map[1]
                         )
                     )
-                    f.write("    mov rbx, rsp\n")
-                    f.write("    and rsp, -16\n")
-                    f.write(f"    call {src.value_type.name}__getitem__\n")
-                    f.write("    mov rsp, rbx\n")
-
+                    f.write(emit_call(f"{src.value_type.name}__getitem__"))
                     f.write(emit_reg_to_source(dest.source, function.env.code_obj))
                 # case Operation.VA_ARG:
                 #     assert inst.arg1 is not None

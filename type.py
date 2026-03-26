@@ -35,3 +35,6 @@ class Type:
 
     def __repr__(self):
         return f"{self.name}{self.sub_types if self.sub_types != () else ''}"
+
+    def copy(self) -> Type:
+        return Type(self.name, self.sub_types)

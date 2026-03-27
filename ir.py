@@ -100,7 +100,8 @@ class GetItemOperation:
     dest: TypedSource
     src: TypedSource
     index: TypedSource
-    
+
+
 @dataclass
 class CommentOperation:
     msg: str
@@ -109,6 +110,7 @@ class CommentOperation:
 @dataclass
 class RaiseOperation:
     handler: int
+
 
 Operation = Union[
     AssignOperation,
@@ -145,6 +147,33 @@ def operation_to_string(op: Operation) -> str:
         case CommentOperation(msg):
             return f"    {msg}"
     return repr(op)
+
+
+op_str_to_op_type: dict[str, BinaryOperatorEnum] = {
+    "+": BinaryOperatorEnum.ADD,
+    "-": BinaryOperatorEnum.SUB,
+    "*": BinaryOperatorEnum.MUL,
+    "/": BinaryOperatorEnum.DIV,
+    "<": BinaryOperatorEnum.LT,
+    ">": BinaryOperatorEnum.GT,
+    "<=": BinaryOperatorEnum.LE,
+    ">=": BinaryOperatorEnum.GE,
+    "==": BinaryOperatorEnum.EQ,
+    "!=": BinaryOperatorEnum.NE,
+}
+
+op_type_to_method: dict[BinaryOperatorEnum, str] = {
+    BinaryOperatorEnum.ADD: "__add__",
+    BinaryOperatorEnum.SUB: "__sub__",
+    BinaryOperatorEnum.MUL: "__mul__",
+    BinaryOperatorEnum.DIV: "__div__",
+    BinaryOperatorEnum.LT: "__lt__",
+    BinaryOperatorEnum.GT: "__gt__",
+    BinaryOperatorEnum.LE: "__le__",
+    BinaryOperatorEnum.GE: "__ge__",
+    BinaryOperatorEnum.EQ: "__eq__",
+    BinaryOperatorEnum.NE: "__ne__",
+}
 
 
 @dataclass

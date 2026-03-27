@@ -38,7 +38,7 @@ from builtin_types import (
     CustomFunction,
     Environment,
     type_has_method,
-    type_methods,
+    methods_of_type,
     builtin_functions,
     obj_name_to_type,
 )
@@ -112,8 +112,8 @@ def emit_reg_to_source(source: Source, code_obj: CodeType, reg: str = "rax"):
 
 def emit_const_obj(env_name: str, obj, const_n: int):
     f = io.StringIO()
-
     f.write(f"{env_name}_CONST{const_n}: \n")
+    f.write(f".header: dq {obj_name_to_type[obj.__class__.__name__].type_id}\n")
     match obj:
         case str():
             f.write(".value_p: dq .value\n")
@@ -349,6 +349,13 @@ class Compiler:
                         )
                     )
                     curr_frame = create_frame(frames, curr_frame)
+                case "JUMP_FORWARD":
+                    frames[curr_frame].instructions.append(
+                        ir.GotoOperation(
+                            Source(SourceType.LABEL, jump_labels[inst.argval]),
+                        )
+                    )
+                    curr_frame = create_frame(frames, curr_frame)
                 case "RETURN_CONST":
                     assert isinstance(inst.arg, int)
                     frames[curr_frame].instructions.append(
@@ -539,11 +546,11 @@ class Compiler:
                                 f"Type {arg1_type.name} doesn't implement {method} method."
                             )
 
-                        type_methods[arg1_type][method].validate_args(
+                        methods_of_type[arg1_type][method].validate_args(
                             (arg1_type, arg2_type)
                         )
 
-                        return_type = type_methods[arg1_type][method].get_return_type()
+                        return_type = methods_of_type[arg1_type][method].get_return_type()
 
                         if dest.source.source_type == SourceType.LOCAL:
                             assert isinstance(dest.source.value, int)
@@ -621,8 +628,12 @@ class Compiler:
             f.write("extern _print\n")
             f.write("extern id\n")
             f.write("extern build_list\n")
+            
+            for function in builtin_functions:
+                f.write(f"extern {function}\n")
+                
 
-            for type, methods in type_methods.items():
+            for type, methods in methods_of_type.items():
                 for method_name, method in methods.items():
                     f.write(f"extern {method.generate_function_name()}\n")
 
@@ -677,8 +688,7 @@ class Compiler:
 
             f.write("section .data\n")
 
-            f.write("global None\n")
-            f.write("None: dq 0\n")
+            f.write("extern None\n")
             f.write(self.generate_constants(code_obj))
 
     def compile_function_nasm(self, function: CustomFunction) -> str:
@@ -757,7 +767,7 @@ class Compiler:
                         f.write(f"    jmp .{label.value}\n")
                     case GotoIfFalseOperation(label, cond):
                         f.write(emit_source_to_reg(cond.source, function.env.code_obj))
-                        f.write("    mov rax, [rax]\n")
+                        f.write("    mov rax, [rax+8]\n")
                         f.write("    test rax, rax\n")
                         f.write(f"    jz .{label.value}\n")
                     case ReturnOperation(value):
@@ -863,7 +873,7 @@ if __name__ == "__main__":
     compiler = Compiler(filename, output, build_dir)
     compiler.compile_file_nasm()
 
-    c_sources = ["std.c", "int.c", "str.c", "list.c", "tuple.c"]
+    c_sources = ["std.c", "int.c", "str.c", "list.c", "tuple.c", "none.c", "type.c"]
 
     os.system(f"nasm -f elf64 {build_dir}/{output}.asm -o {build_dir}/{output}.o -g")
 

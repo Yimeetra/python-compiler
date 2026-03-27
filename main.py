@@ -4,19 +4,20 @@ if __name__ != "__main__":
         _print("\n")
 
 
-def foo():
-    bar()
-    
-def bar():
-    baz()
-    
-def baz():
-    raise
-
 def main() -> None:
-    try:
-        foo()
-    except:
-        print("Exception")
+    a = type("420, 123")
+    b = type("123")
+    if a == b:
+        print("Yes")
+    else:
+        print("No")
+        
+    a = type((420, 123,))
+    b = type(123)
+    if a == b:
+        print("Yes")
+    else:
+        print("No")
+    return None
 
 main()

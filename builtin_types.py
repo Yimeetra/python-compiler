@@ -63,7 +63,7 @@ class DunderWrapperFunction(Function):
             )
 
     def get_return_type(self):
-        method = type_methods[self.arg_types[0]][f"__{self.base_name}__"]
+        method = methods_of_type[self.arg_types[0]][f"__{self.base_name}__"]
         method.arg_types = self.arg_types
         return method.get_return_type()
 
@@ -110,6 +110,13 @@ builtin_functions: dict[str, Function] = {
             "id",
             (Type.from_builtin(BuiltinTypesEnum.any),),
             lambda _: Type.from_builtin(BuiltinTypesEnum.int),
+        )
+    ),
+    "type": (
+        BuiltInFunction(
+            "type",
+            (Type.from_builtin(BuiltinTypesEnum.any),),
+            lambda _: Type.from_builtin(BuiltinTypesEnum.type),
         )
     ),
 }
@@ -267,14 +274,29 @@ tuple_iterator_methods: dict[str, Function] = {
     ),
 }
 
+type_methods: dict[str, Function] = {
+    "__str__": BuiltInMethod(
+        "__str__",
+        (Type.from_builtin(BuiltinTypesEnum.type),),
+        lambda _: Type.from_builtin(BuiltinTypesEnum.str),
+    ),
+    "__eq__": binop_function(
+        "__eq__",
+        Type.from_builtin(BuiltinTypesEnum.type),
+        Type.from_builtin(BuiltinTypesEnum.type),
+        Type.from_builtin(BuiltinTypesEnum.int),
+    ),
+}
 
-type_methods: dict[Type, dict[str, Function]] = {
+
+methods_of_type: dict[Type, dict[str, Function]] = {
     Type.from_builtin(BuiltinTypesEnum.int): int_methods,
     Type.from_builtin(BuiltinTypesEnum.str): str_methods,
     Type.from_builtin(BuiltinTypesEnum.list): list_methods,
     Type.from_builtin(BuiltinTypesEnum.tuple): tuple_methods,
     Type.from_builtin(BuiltinTypesEnum.list_iterator): list_iterator_methods,
     Type.from_builtin(BuiltinTypesEnum.tuple_iterator): tuple_iterator_methods,
+    Type.from_builtin(BuiltinTypesEnum.type): type_methods,
 }
 
 obj_name_to_type: dict[str, Type] = {
@@ -287,11 +309,11 @@ obj_name_to_type: dict[str, Type] = {
 
 
 def type_has_method(type: Type, method: str) -> bool:
-    type_copy = Type(type.name, type.sub_types)
-    methods = type_methods.get(type_copy)
+    type_copy = type.copy()
+    methods = methods_of_type.get(type_copy)
     if not methods:
         type_copy.sub_types = ()
-        methods = type_methods.get(type_copy)
+        methods = methods_of_type.get(type_copy)
     if not methods:
         return False
     if not methods.get(method):

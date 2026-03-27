@@ -1,9 +1,12 @@
 #pragma once
 
+#include "object.h"
 #include <stdint.h>
 #include "str.h"
+#include "none.h"
 
 typedef struct {
+    ObjectHeader header;
     int64_t value;
 } IntObj;
 

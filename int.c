@@ -2,8 +2,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-extern void * None;
-
 StrObj *int__str__(IntObj *self) {
     StrObj *result = malloc(sizeof(StrObj));
     int n = snprintf(0, 0, "%ld", self->value);
@@ -74,5 +72,5 @@ IntObj *int__ne__(IntObj *self, IntObj *other) {
 
 void *int__del__(IntObj *self) {
     free(self);
-    return &None;
+    return None;
 }

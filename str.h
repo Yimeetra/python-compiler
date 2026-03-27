@@ -1,6 +1,8 @@
 #pragma once
 
+#include "object.h"
 typedef struct {
+    ObjectHeader header;
     char* value;
 } StrObj;
 

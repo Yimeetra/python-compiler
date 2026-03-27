@@ -2,8 +2,8 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include "none.h"
 
-extern void *None;
 
 ListObj *build_list(int n, ...) {
     ListObj *self = malloc(sizeof(ListObj));

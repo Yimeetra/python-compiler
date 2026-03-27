@@ -4,13 +4,12 @@
 #include <string.h>
 #include <math.h>
 #include <unistd.h>
+#include "none.h"
 #include "int.h"
 
-extern void * None;
-
-void *_print(void *string) {
-    printf("%s", *(char **)string);
-    return &None;
+NoneObj *_print(StrObj *string) {
+    printf("%s", string->value);
+    return None;
 }
 
 IntObj *id(void *value) {

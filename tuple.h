@@ -1,8 +1,10 @@
 #pragma once
 
+#include "object.h"
 #include "int.h"
 
 typedef struct {
+    ObjectHeader header;
     void **items;
     int length;
 } TupleObj;

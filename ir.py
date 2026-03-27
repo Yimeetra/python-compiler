@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 
 from type import Type, BuiltinTypesEnum
@@ -100,7 +100,15 @@ class GetItemOperation:
     dest: TypedSource
     src: TypedSource
     index: TypedSource
+    
+@dataclass
+class CommentOperation:
+    msg: str
 
+
+@dataclass
+class RaiseOperation:
+    handler: int
 
 Operation = Union[
     AssignOperation,
@@ -111,6 +119,8 @@ Operation = Union[
     CallOperation,
     ReturnOperation,
     GetItemOperation,
+    CommentOperation,
+    RaiseOperation,
 ]
 
 
@@ -132,4 +142,14 @@ def operation_to_string(op: Operation) -> str:
             return f"    return {value}"
         case GetItemOperation(dest, src, index):
             return f"    {dest} = {src}[{index}]"
+        case CommentOperation(msg):
+            return f"    {msg}"
     return repr(op)
+
+
+@dataclass
+class Frame:
+    stack: list[Source] = field(default_factory=list)
+    instructions: list[Operation] = field(default_factory=list)
+    branches: set[int] = field(default_factory=set)
+    exception_handler: int = 0

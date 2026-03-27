@@ -26,12 +26,14 @@ from ir import (
     CallOperation,
     ReturnOperation,
     GetItemOperation,
+    CommentOperation,
+    RaiseOperation,
+    Frame,
 )
 import ir
 from type import Type, BuiltinTypesEnum
 
 from dataclasses import dataclass, field
-from abc import ABC
 
 DEBUG = True
 EMIT_IR = True
@@ -95,7 +97,7 @@ class BuiltInFunction(Function):
 @dataclass(kw_only=True, unsafe_hash=True)
 class CustomFunction(Function):
     env: Environment = field(hash=False)
-    instructions: list[Operation] = field(default_factory=list, hash=False)
+    frames: list[Frame] = field(default_factory=list, hash=False)
 
 
 class DunderWrapperFunction(Function):
@@ -441,8 +443,13 @@ def emit_const_obj(env_name: str, obj, const_n: int):
     return f.getvalue()
 
 
-def emit_call(function_name: str) -> str:
-    return f"    call {function_name}\n"
+def emit_call(function_name: str, exception_handler: int) -> str:
+    f = io.StringIO()
+
+    f.write(f"    push .ET{exception_handler}\n")
+    f.write(f"    call {function_name}\n")
+    f.write("    add rsp, 8\n")
+    return f.getvalue()
 
 
 class Compiler:
@@ -475,19 +482,17 @@ class Compiler:
     def compile_code_obj(self, code_obj: CodeType) -> CustomFunction:
         env: Environment = Environment(code_obj)
 
-        instructions: list[Operation] = self.compile_ir(code_obj)
+        frames: list[Frame] = self.compile_ir(code_obj)
 
         return CustomFunction(
             base_name=code_obj.co_name,
             arg_types=tuple(),
             _return_type_getter=lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
             env=env,
-            instructions=instructions,
+            frames=frames,
         )
 
-    def compile_ir(self, code_obj) -> list[Operation]:
-        code_obj
-
+    def compile_ir(self, code_obj) -> list[Frame]:
         instructions = more_itertools.seekable(dis.get_instructions(code_obj))
         var_iter = itertools.count()
         label_iter = itertools.count()
@@ -498,42 +503,88 @@ class Compiler:
             if "JUMP" in inst.opname:
                 jump_labels[inst.argval] = f"L{next(label_iter)}"
 
-        stack: list[Source] = []
-        output: list[Operation] = []
+        exception_table_enitries = dis._parse_exception_table(code_obj)
+
+        frames: list[Frame] = []
+        curr_frame = 0
+        frames.append(Frame())
+        exception_handlers: list[int] = [0]
+
+        def create_frame(frames: list[Frame], curr_frame: int) -> int:
+            if len(frames[curr_frame].instructions) != 0:
+                frames.append(Frame())
+                stack_copy = frames[curr_frame].stack.copy()
+                curr_frame = len(frames) - 1
+                frames[curr_frame].stack = stack_copy
+            return curr_frame
+
+        label_to_block_index = {}
 
         instructions.seek(0)
         for inst in instructions:
-            label = jump_labels.get(inst.offset)
-            if label:
-                output.append(ir.LabelOperation(Source(SourceType.LABEL, label)))
+            label_name = jump_labels.get(inst.offset)
+            if label_name:
+                curr_frame = create_frame(frames, curr_frame)
+                # label_to_block_index[label] = curr_block
+                frames[curr_frame].instructions.append(
+                    ir.LabelOperation(Source(SourceType.LABEL, label_name))
+                )
+                label_to_block_index[label_name] = curr_frame
+            for i, entry in enumerate(exception_table_enitries, 1):
+                if entry.start == inst.offset:
+                    exception_handlers.append(i)
+                    curr_frame = create_frame(frames, curr_frame)
+                    frames[curr_frame].instructions.append(
+                        ir.LabelOperation(Source(SourceType.LABEL, f"ES{i}"))
+                    )
+                if entry.end == inst.offset:
+                    frames[curr_frame].instructions.append(
+                        ir.LabelOperation(Source(SourceType.LABEL, f"EE{i}"))
+                    )
+                    label_to_block_index[f"EE{i}"] = curr_frame
+                if entry.target == inst.offset:
+                    frames[curr_frame].exception_handler = exception_handlers.pop()
+                    prev_block = curr_frame
+                    curr_frame = create_frame(frames, curr_frame)
+                    frames[curr_frame].stack.append(
+                        Source(SourceType.CONST, "exception")
+                    )
+                    frames[curr_frame].instructions.append(
+                        ir.LabelOperation(Source(SourceType.LABEL, f"ET{i}"))
+                    )
+                    frames[prev_block].branches.add(curr_frame)
+                    label_to_block_index[f"ET{i}"] = curr_frame
+
             match inst.opname:
                 case "LOAD_CONST":
                     assert isinstance(inst.arg, int)
-                    stack.append(Source(SourceType.CONST, inst.arg))
+                    frames[curr_frame].stack.append(Source(SourceType.CONST, inst.arg))
                 case "STORE_FAST":
                     assert isinstance(inst.arg, int)
-                    output.append(
+                    frames[curr_frame].instructions.append(
                         ir.AssignOperation(
                             TypedSource(
                                 Source(SourceType.LOCAL, inst.arg),
                             ),
                             TypedSource(
-                                stack.pop(),
+                                frames[curr_frame].stack.pop(),
                             ),
                         )
                     )
                 case "LOAD_GLOBAL":
-                    stack.append(Source(SourceType.GLOBAL, inst.argval))
+                    frames[curr_frame].stack.append(
+                        Source(SourceType.GLOBAL, inst.argval)
+                    )
                 case "LOAD_FAST":
                     assert isinstance(inst.arg, int)
-                    stack.append(Source(SourceType.LOCAL, inst.arg))
+                    frames[curr_frame].stack.append(Source(SourceType.LOCAL, inst.arg))
                 case "BINARY_OP":
-                    var2 = stack.pop()
-                    var1 = stack.pop()
+                    var2 = frames[curr_frame].stack.pop()
+                    var1 = frames[curr_frame].stack.pop()
                     if "=" in inst.argrepr:
                         op_str = inst.argrepr.replace("=", "")
                         op = op_str_to_op_type[op_str]
-                        output.append(
+                        frames[curr_frame].instructions.append(
                             ir.BinaryOperation(
                                 op,
                                 TypedSource(var1),
@@ -541,12 +592,14 @@ class Compiler:
                                 TypedSource(var2),
                             )
                         )
-                        stack.append(Source(SourceType.LOCAL, inst.argval))
+                        frames[curr_frame].stack.append(
+                            Source(SourceType.LOCAL, inst.argval)
+                        )
                         next(instructions)
                     else:
                         temp_var = f"t{next(var_iter)}"
                         op = op_str_to_op_type[inst.argrepr]
-                        output.append(
+                        frames[curr_frame].instructions.append(
                             ir.BinaryOperation(
                                 op,
                                 TypedSource(Source(SourceType.TEMP, temp_var)),
@@ -554,26 +607,28 @@ class Compiler:
                                 TypedSource(var2),
                             )
                         )
-                        stack.append(Source(SourceType.TEMP, temp_var))
+                        frames[curr_frame].stack.append(
+                            Source(SourceType.TEMP, temp_var)
+                        )
                 case "CALL":
                     temp_var = f"t{next(var_iter)}"
                     args: list[TypedSource] = []
                     for i in range(inst.argval):
-                        args.append(TypedSource(stack.pop()))
-                    output.append(
+                        args.append(TypedSource(frames[curr_frame].stack.pop()))
+                    frames[curr_frame].instructions.append(
                         ir.CallOperation(
-                            stack.pop(),
+                            frames[curr_frame].stack.pop(),
                             args,
                             TypedSource(Source(SourceType.TEMP, temp_var)),
                         )
                     )
-                    stack.append(Source(SourceType.TEMP, temp_var))
+                    frames[curr_frame].stack.append(Source(SourceType.TEMP, temp_var))
                 case "COMPARE_OP":
-                    var2 = stack.pop()
-                    var1 = stack.pop()
+                    var2 = frames[curr_frame].stack.pop()
+                    var1 = frames[curr_frame].stack.pop()
                     temp_var = f"t{next(var_iter)}"
                     op = op_str_to_op_type[inst.argrepr]
-                    output.append(
+                    frames[curr_frame].instructions.append(
                         ir.BinaryOperation(
                             op,
                             TypedSource(Source(SourceType.TEMP, temp_var)),
@@ -581,34 +636,36 @@ class Compiler:
                             TypedSource(var2),
                         )
                     )
-                    stack.append(Source(SourceType.TEMP, temp_var))
+                    frames[curr_frame].stack.append(Source(SourceType.TEMP, temp_var))
                 case "POP_JUMP_IF_FALSE":
-                    var1 = stack.pop()
-                    output.append(
+                    var1 = frames[curr_frame].stack.pop()
+                    frames[curr_frame].instructions.append(
                         ir.GotoIfFalseOperation(
                             Source(SourceType.LABEL, jump_labels[inst.argval]),
                             TypedSource(var1),
                         )
                     )
+                    curr_frame = create_frame(frames, curr_frame)
                 case "POP_TOP":
-                    stack.pop()
+                    frames[curr_frame].stack.pop()
                 case "JUMP_BACKWARD":
-                    output.append(
+                    frames[curr_frame].instructions.append(
                         ir.GotoOperation(
                             Source(SourceType.LABEL, jump_labels[inst.argval]),
                         )
                     )
+                    curr_frame = create_frame(frames, curr_frame)
                 case "RETURN_CONST":
                     assert isinstance(inst.arg, int)
-                    output.append(
+                    frames[curr_frame].instructions.append(
                         ir.ReturnOperation(
                             TypedSource(Source(SourceType.CONST, inst.arg)),
                         )
                     )
                 case "RETURN_VALUE":
-                    output.append(
+                    frames[curr_frame].instructions.append(
                         ir.ReturnOperation(
-                            TypedSource(stack.pop()),
+                            TypedSource(frames[curr_frame].stack.pop()),
                         )
                     )
                 case "RESUME":
@@ -632,25 +689,68 @@ class Compiler:
 
                 case "BINARY_SUBSCR":
                     temp_var = f"t{next(var_iter)}"
-                    index = stack.pop()
-                    src = stack.pop()
-                    output.append(
+                    index = frames[curr_frame].stack.pop()
+                    src = frames[curr_frame].stack.pop()
+                    frames[curr_frame].instructions.append(
                         GetItemOperation(
                             TypedSource(Source(SourceType.TEMP, temp_var)),
                             TypedSource(src),
                             TypedSource(index),
                         )
                     )
-                    stack.append(Source(SourceType.TEMP, temp_var))
+                    frames[curr_frame].stack.append(Source(SourceType.TEMP, temp_var))
+                case "PUSH_EXC_INFO":
+                    temp = frames[curr_frame].stack.pop()
+                    frames[curr_frame].stack.append(
+                        Source(SourceType.CONST, "previous_exception_state")
+                    )
+                    frames[curr_frame].stack.append(temp)
+                case "POP_EXCEPT":
+                    # blocks[curr_block][1].append(CommentOperation("POP_EXCEPT"))
+                    frames[curr_frame].stack.pop()
+                case "COPY":
+                    if len(frames[curr_frame].stack) <= inst.arg:
+                        frames[curr_frame].stack.append(Source(SourceType.CONST, "0"))
+                    else:
+                        frames[curr_frame].stack.append(
+                            frames[curr_frame].stack[-inst.arg]
+                        )
+                case "RERAISE":
+                    frames[curr_frame].stack.pop()
+                    # blocks[curr_block][1].append(CommentOperation("RERAISE"))
+                case "RAISE_VARARGS":
+                    # blocks[curr_block][1].append(CommentOperation("RAISE"))
+                    if len(exception_handlers) != 0:
+                        frames[curr_frame].instructions.append(
+                            RaiseOperation(exception_handlers[-1])
+                        )
+                    else:
+                        frames[curr_frame].instructions.append(RaiseOperation(0))
+
                 case _:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
-        return output
+
+        for i, frame in enumerate(frames):
+            match frame.instructions[-1]:
+                case GotoOperation(label):
+                    assert isinstance(label.value, str)
+                    frame.branches.add(label_to_block_index[label.value])
+                case GotoIfFalseOperation(label, cond):
+                    assert isinstance(label.value, str)
+                    frame.branches.add(label_to_block_index[label.value])
+                    frame.branches.add(i + 1)
+                case ReturnOperation(_):
+                    pass
+                case _:
+                    frame.branches.add(i + 1)
+
+        return frames
 
     def annotate_function_types(
         self,
         function: CustomFunction,
         arg_types: list[Type] | None,
-    ) -> tuple[Type, list[Operation]]:
+    ) -> Type:
         arg_types = arg_types or []
         return_type = Type.from_builtin(BuiltinTypesEnum.unknown)
 
@@ -667,145 +767,155 @@ class Compiler:
         variadic_args_count = 0
         variadic_args_types: set[Type] = set()
 
-        instructions = more_itertools.seekable(enumerate(function.instructions))
+        for frame in function.frames:
+            instructions = more_itertools.seekable(enumerate(frame.instructions))
 
-        for i, inst in instructions:
-            match inst:
-                case AssignOperation(dest, src):
-                    assert isinstance(dest.source.value, int)
-                    src.value_type = get_type_of_source(src.source, function.env)
-                    dest.value_type = src.value_type.copy()
-                    function.env.variable_types[
-                        function.env.code_obj.co_varnames[dest.source.value]
-                    ] = dest.value_type
-                case CallOperation(target, args, dest):
-                    assert isinstance(target.value, str)
+            for i, inst in instructions:
+                match inst:
+                    case AssignOperation(dest, src):
+                        assert isinstance(dest.source.value, int)
+                        src.value_type = get_type_of_source(src.source, function.env)
+                        dest.value_type = src.value_type.copy()
+                        function.env.variable_types[
+                            function.env.code_obj.co_varnames[dest.source.value]
+                        ] = dest.value_type
+                    case CallOperation(target, args, dest):
+                        assert isinstance(target.value, str)
 
-                    for arg in args:
-                        arg.value_type = get_type_of_source(arg.source, function.env)
-
-                    func = builtin_functions.get(target.value)
-                    if func is None:
-                        temp = [
-                            function
-                            for function in self.functions
-                            if function
-                            == Function(
-                                target.value, tuple(arg.value_type for arg in args)
+                        for arg in args:
+                            arg.value_type = get_type_of_source(
+                                arg.source, function.env
                             )
-                        ]
-                        if len(temp) != 0:
-                            func = temp.pop()
-                        else:
-                            func = None
 
-                    if func is None:
-                        func = self.compile_code_obj(self.local_code_objs[target.value])
-                        func_return_type, func_instructions = (
-                            self.annotate_function_types(
+                        func = builtin_functions.get(target.value)
+                        if func is None:
+                            temp = [
+                                function
+                                for function in self.functions
+                                if function
+                                == Function(
+                                    target.value, tuple(arg.value_type for arg in args)
+                                )
+                            ]
+                            if len(temp) != 0:
+                                func = temp.pop()
+                            else:
+                                func = None
+
+                        if func is None:
+                            func = self.compile_code_obj(
+                                self.local_code_objs[target.value]
+                            )
+                            func_return_type = self.annotate_function_types(
                                 func, [arg.value_type for arg in args]
                             )
+                            func._return_type_getter = lambda _: func_return_type
+
+                        func.validate_args(tuple(arg.value_type for arg in args))
+
+                        if dest.source.source_type == SourceType.LOCAL:
+                            assert isinstance(dest.source.value, int)
+                            function.env.variable_types[
+                                function.env.code_obj.co_varnames[dest.source.value]
+                            ] = func.get_return_type()
+                        else:
+                            function.env.temp_type = func.get_return_type()
+
+                        target.value = func.generate_function_name()
+                        dest.value_type = func.get_return_type()
+                    case GotoOperation():
+                        pass
+                    case GotoIfFalseOperation(label, cond):
+                        cond.value_type = get_type_of_source(cond.source, function.env)
+                    case ReturnOperation(value):
+                        value.value_type = get_type_of_source(
+                            value.source, function.env
                         )
-                        func.instructions = func_instructions
-                        func._return_type_getter = lambda _: func_return_type
+                        return_type = value.value_type
+                    case LabelOperation():
+                        pass
+                    case BinaryOperation(binop, dest, lhs, rhs):
+                        method = op_type_to_method[binop]
 
-                    func.validate_args(tuple(arg.value_type for arg in args))
+                        arg1_type = get_type_of_source(lhs.source, function.env)
+                        arg2_type = get_type_of_source(rhs.source, function.env)
 
-                    if dest.source.source_type == SourceType.LOCAL:
-                        assert isinstance(dest.source.value, int)
-                        function.env.variable_types[
-                            function.env.code_obj.co_varnames[dest.source.value]
-                        ] = func.get_return_type()
-                    else:
-                        function.env.temp_type = func.get_return_type()
+                        if not type_has_method(arg1_type, method):
+                            raise Exception(
+                                f"Type {arg1_type.name} doesn't implement {method} method."
+                            )
 
-                    target.value = func.generate_function_name()
-                    dest.value_type = func.get_return_type()
-                case GotoOperation():
-                    pass
-                case GotoIfFalseOperation(label, cond):
-                    cond.value_type = get_type_of_source(cond.source, function.env)
-                case ReturnOperation(value):
-                    value.value_type = get_type_of_source(value.source, function.env)
-                    return_type = value.value_type
-                case LabelOperation():
-                    pass
-                case BinaryOperation(binop, dest, lhs, rhs):
-                    method = op_type_to_method[binop]
-
-                    arg1_type = get_type_of_source(lhs.source, function.env)
-                    arg2_type = get_type_of_source(rhs.source, function.env)
-
-                    if not type_has_method(arg1_type, method):
-                        raise Exception(
-                            f"Type {arg1_type.name} doesn't implement {method} method."
+                        type_methods[arg1_type][method].validate_args(
+                            (arg1_type, arg2_type)
                         )
 
-                    type_methods[arg1_type][method].validate_args(
-                        (arg1_type, arg2_type)
-                    )
+                        return_type = type_methods[arg1_type][method].get_return_type()
 
-                    return_type = type_methods[arg1_type][method].get_return_type()
+                        if dest.source.source_type == SourceType.LOCAL:
+                            assert isinstance(dest.source.value, int)
+                            function.env.variable_types[
+                                function.env.code_obj.co_varnames[dest.source.value]
+                            ] = return_type
+                        else:
+                            function.env.temp_type = return_type
+                        dest.value_type = return_type
+                        lhs.value_type = arg1_type
+                        rhs.value_type = arg2_type
+                    # case Operation.VA_ARG:
+                    #     assert inst.arg1 is not None
+                    #     variadic_args_count += 1
+                    #     va_arg_type = get_type_of_source(inst.arg1, env)
+                    #     variadic_args_types.add(va_arg_type)
+                    #     inst.dest_type = va_arg_type
+                    # case Operation.BUILD_LIST:
+                    #     if len(variadic_args_types) > 1:
+                    #         raise Exception("Allowed lists only of one type.")
 
-                    if dest.source.source_type == SourceType.LOCAL:
-                        assert isinstance(dest.source.value, int)
-                        function.env.variable_types[
-                            function.env.code_obj.co_varnames[dest.source.value]
-                        ] = return_type
-                    else:
-                        function.env.temp_type = return_type
-                    dest.value_type = return_type
-                    lhs.value_type = arg1_type
-                    rhs.value_type = arg2_type
-                # case Operation.VA_ARG:
-                #     assert inst.arg1 is not None
-                #     variadic_args_count += 1
-                #     va_arg_type = get_type_of_source(inst.arg1, env)
-                #     variadic_args_types.add(va_arg_type)
-                #     inst.dest_type = va_arg_type
-                # case Operation.BUILD_LIST:
-                #     if len(variadic_args_types) > 1:
-                #         raise Exception("Allowed lists only of one type.")
+                    #     if len(variadic_args_types) != 0:
+                    #         list_type = variadic_args_types.pop()
+                    #     else:
+                    #         list_type = Type.from_builtin(BuiltinTypesEnum.none)
 
-                #     if len(variadic_args_types) != 0:
-                #         list_type = variadic_args_types.pop()
-                #     else:
-                #         list_type = Type.from_builtin(BuiltinTypesEnum.none)
+                    #     env.temp_type = Type.from_builtin(
+                    #         BuiltinTypesEnum.list, (list_type,)
+                    #     )
+                    #     inst.dest_type = Type.from_builtin(
+                    #         BuiltinTypesEnum.list, (list_type,)
+                    #     )
+                    case GetItemOperation(dest, src, index):
+                        assert isinstance(index.source.value, int)
+                        src.value_type = get_type_of_source(src.source, function.env)
+                        index.value_type = get_type_of_source(
+                            index.source, function.env
+                        )
 
-                #     env.temp_type = Type.from_builtin(
-                #         BuiltinTypesEnum.list, (list_type,)
-                #     )
-                #     inst.dest_type = Type.from_builtin(
-                #         BuiltinTypesEnum.list, (list_type,)
-                #     )
-                case GetItemOperation(dest, src, index):
-                    assert isinstance(index.source.value, int)
-                    src.value_type = get_type_of_source(src.source, function.env)
-                    index.value_type = get_type_of_source(index.source, function.env)
+                        if (
+                            src.value_type.name
+                            == Type.from_builtin(BuiltinTypesEnum.tuple).name
+                        ):
+                            if index.source.source_type != SourceType.CONST:
+                                raise Exception("Tuple index must be constant.")
 
-                    if (
-                        src.value_type.name
-                        == Type.from_builtin(BuiltinTypesEnum.tuple).name
-                    ):
-                        if index.source.source_type != SourceType.CONST:
-                            raise Exception("Tuple index must be constant.")
+                            if index.value_type != Type.from_builtin(
+                                BuiltinTypesEnum.int
+                            ):
+                                raise Exception("Tuple index must be 'int' type.")
 
-                        if index.value_type != Type.from_builtin(BuiltinTypesEnum.int):
-                            raise Exception("Tuple index must be 'int' type.")
-
-                        i = function.env.code_obj.co_consts[index.source.value]
-                        dest.value_type = src.value_type.sub_types[i]
-                        function.env.temp_type = src.value_type.sub_types[i]
-                    else:
-                        assert len(src.value_type.sub_types) > 0
-                        dest.value_type = src.value_type.sub_types[0]
-                        function.env.temp_type = src.value_type.sub_types[0]
-                case _:
-                    raise Exception(f"Instruction {inst.op} is unimplemented")
+                            i = function.env.code_obj.co_consts[index.source.value]
+                            dest.value_type = src.value_type.sub_types[i]
+                            function.env.temp_type = src.value_type.sub_types[i]
+                        else:
+                            assert len(src.value_type.sub_types) > 0
+                            dest.value_type = src.value_type.sub_types[0]
+                            function.env.temp_type = src.value_type.sub_types[0]
+                    case RaiseOperation(_):
+                        pass
+                    case _:
+                        raise Exception(f"Instruction {inst} is unimplemented")
 
         self.functions.append(function)
 
-        return return_type, function.instructions
+        return return_type
 
     def compile_file_nasm(self) -> None:
         with open(
@@ -833,7 +943,7 @@ class Compiler:
 
             main_code: CodeType | None = None
 
-            function_name_to_ir: dict[str, list[Operation]] = {}
+            function_name_to_ir: dict[str, list[Frame]] = {}
 
             for code in code_obj.co_consts:
                 if not isinstance(code, CodeType):
@@ -853,8 +963,9 @@ class Compiler:
                         f"{self.output_dir.rstrip('/')}/{filename}.ir",
                         "w",
                     ) as ir_f:
-                        for i in ir:
-                            ir_f.write(f"{operation_to_string(i)}\n")
+                        for frame in ir:
+                            for i in frame.instructions:
+                                ir_f.write(f"{operation_to_string(i)}\n")
 
             if main_code is None:
                 raise Exception("Function 'main' is undefined")
@@ -904,120 +1015,146 @@ class Compiler:
         for i in range(function.env.code_obj.co_argcount):
             f.write(f"    mov [rbp-8*{i + 1}], {args_to_regs_map[i]}\n")
 
-        instructions = more_itertools.seekable(enumerate(function.instructions))
+        for frame in function.frames:
+            instructions = more_itertools.seekable(enumerate(frame.instructions))
 
-        for i, inst in instructions:
-            # if inst == Type.from_builtin(
-            #     BuiltinTypesEnum.unknown
-            # ) and inst.op not in [
-            #     Operation.GOTO_IF_FALSE,
-            #     Operation.GOTO,
-            #     Operation.LABEL,
-            #     Operation.CALL,  # TODO: CALL is temporary
-            # ]:
-            #     raise Exception(f"Instruction's {i} {inst.op.name} type is unknown")
-            if DEBUG:
-                f.write(f"; {operation_to_string(inst)}\n")
-            match inst:
-                case AssignOperation(dest, src):
-                    assert isinstance(dest.source.value, int)
+            for i, inst in instructions:
+                # if inst == Type.from_builtin(
+                #     BuiltinTypesEnum.unknown
+                # ) and inst.op not in [
+                #     Operation.GOTO_IF_FALSE,
+                #     Operation.GOTO,
+                #     Operation.LABEL,
+                #     Operation.CALL,  # TODO: CALL is temporary
+                # ]:
+                #     raise Exception(f"Instruction's {i} {inst.op.name} type is unknown")
+                if DEBUG:
+                    f.write(f"; {operation_to_string(inst)}\n")
+                match inst:
+                    case AssignOperation(dest, src):
+                        assert isinstance(dest.source.value, int)
 
-                    f.write(emit_source_to_reg(src.source, function.env.code_obj))
-                    f.write(emit_reg_to_source(dest.source, function.env.code_obj))
-                case CallOperation(target, args, dest):
-                    assert isinstance(target.value, str)
+                        f.write(emit_source_to_reg(src.source, function.env.code_obj))
+                        f.write(emit_reg_to_source(dest.source, function.env.code_obj))
+                    case CallOperation(target, args, dest):
+                        assert isinstance(target.value, str)
 
-                    for arg, reg in zip(args, args_to_regs_map):
-                        f.write(
-                            emit_source_to_reg(arg.source, function.env.code_obj, reg)
-                        )
+                        for arg, reg in zip(args, args_to_regs_map):
+                            f.write(
+                                emit_source_to_reg(
+                                    arg.source, function.env.code_obj, reg
+                                )
+                            )
 
-                    func = builtin_functions.get(
-                        target.value,
-                        Function(
+                        func = builtin_functions.get(
                             target.value,
-                            tuple(),
-                            lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
-                        ),
-                    )
-
-                    call_function_name = func.generate_function_name()
-                    f.write(emit_call(call_function_name))
-
-                    f.write(emit_reg_to_source(dest.source, function.env.code_obj))
-                case GotoOperation(label):
-                    f.write(f"    jmp .{label.value}\n")
-                case GotoIfFalseOperation(label, cond):
-                    f.write(emit_source_to_reg(cond.source, function.env.code_obj))
-                    f.write("    mov rax, [rax]\n")
-                    f.write("    test rax, rax\n")
-                    f.write(f"    jz .{label.value}\n")
-                case ReturnOperation(value):
-                    f.write(emit_source_to_reg(value.source, function.env.code_obj))
-                    f.write(
-                        f"    add rsp, {len(function.env.code_obj.co_varnames) * 8 + 15 & -16}\n"
-                    )
-                    f.write("    pop rbx\n")
-                    f.write("    pop rbp\n")
-                    f.write("    ret\n")
-                case LabelOperation(label):
-                    f.write(f".{label.value}:\n")
-                case BinaryOperation(binop, dest, lhs, rhs):
-                    method = op_type_to_method[binop]
-
-                    f.write(
-                        emit_source_to_reg(
-                            lhs.source, function.env.code_obj, args_to_regs_map[0]
+                            Function(
+                                target.value,
+                                tuple(),
+                                lambda _: Type.from_builtin(BuiltinTypesEnum.unknown),
+                            ),
                         )
-                    )
-                    f.write(
-                        emit_source_to_reg(
-                            rhs.source, function.env.code_obj, args_to_regs_map[1]
+
+                        call_function_name = func.generate_function_name()
+                        f.write(emit_call(call_function_name, frame.exception_handler))
+
+                        f.write(emit_reg_to_source(dest.source, function.env.code_obj))
+                    case GotoOperation(label):
+                        f.write(f"    jmp .{label.value}\n")
+                    case GotoIfFalseOperation(label, cond):
+                        f.write(emit_source_to_reg(cond.source, function.env.code_obj))
+                        f.write("    mov rax, [rax]\n")
+                        f.write("    test rax, rax\n")
+                        f.write(f"    jz .{label.value}\n")
+                    case ReturnOperation(value):
+                        f.write(emit_source_to_reg(value.source, function.env.code_obj))
+                        f.write(
+                            f"    add rsp, {len(function.env.code_obj.co_varnames) * 8 + 15 & -16}\n"
                         )
-                    )
-                    f.write(emit_call(f"{lhs.value_type.name}{method}"))
+                        f.write("    pop rbx\n")
+                        f.write("    pop rbp\n")
+                        f.write("    ret\n")
+                    case LabelOperation(label):
+                        f.write(f".{label.value}:\n")
+                    case BinaryOperation(binop, dest, lhs, rhs):
+                        method = op_type_to_method[binop]
 
-                    f.write(emit_reg_to_source(dest.source, function.env.code_obj))
-                case GetItemOperation(dest, src, index):
-                    f.write(
-                        emit_source_to_reg(
-                            src.source, function.env.code_obj, args_to_regs_map[0]
+                        f.write(
+                            emit_source_to_reg(
+                                lhs.source, function.env.code_obj, args_to_regs_map[0]
+                            )
                         )
-                    )
-                    f.write(
-                        emit_source_to_reg(
-                            index.source, function.env.code_obj, args_to_regs_map[1]
+                        f.write(
+                            emit_source_to_reg(
+                                rhs.source, function.env.code_obj, args_to_regs_map[1]
+                            )
                         )
-                    )
-                    f.write(emit_call(f"{src.value_type.name}__getitem__"))
-                    f.write(emit_reg_to_source(dest.source, function.env.code_obj))
-                # case Operation.VA_ARG:
-                #     assert inst.arg1 is not None
+                        f.write(
+                            emit_call(
+                                f"{lhs.value_type.name}{method}",
+                                frame.exception_handler,
+                            )
+                        )
 
-                #     args = []
-                #     args.append(inst.arg1)
-                #     variadic_args_count += 1
-                #     while instructions.peek()[1].op == Operation.VA_ARG:
-                #         variadic_args_count += 1
-                #         arg = next(instructions)[1].arg1
-                #         assert arg is not None
-                #         args.append(arg)
+                        f.write(emit_reg_to_source(dest.source, function.env.code_obj))
+                    case GetItemOperation(dest, src, index):
+                        f.write(
+                            emit_source_to_reg(
+                                src.source, function.env.code_obj, args_to_regs_map[0]
+                            )
+                        )
+                        f.write(
+                            emit_source_to_reg(
+                                index.source, function.env.code_obj, args_to_regs_map[1]
+                            )
+                        )
+                        f.write(
+                            emit_call(
+                                f"{src.value_type.name}__getitem__",
+                                frame.exception_handler,
+                            )
+                        )
+                        f.write(emit_reg_to_source(dest.source, function.env.code_obj))
+                    # case Operation.VA_ARG:
+                    #     assert inst.arg1 is not None
 
-                #     args.reverse()
+                    #     args = []
+                    #     args.append(inst.arg1)
+                    #     variadic_args_count += 1
+                    #     while instructions.peek()[1].op == Operation.VA_ARG:
+                    #         variadic_args_count += 1
+                    #         arg = next(instructions)[1].arg1
+                    #         assert arg is not None
+                    #         args.append(arg)
 
-                #     for arg, reg in zip(args, args_to_regs_map[1:]):
-                #         f.write(emit_source_to_reg(arg, env.code_obj, reg))
+                    #     args.reverse()
 
-                #     assert inst.arg1 is not None
-                # case Operation.BUILD_LIST:
-                #     f.write(f"    mov rdi, {variadic_args_count}\n")
-                #     f.write("    mov rbx, rsp\n")
-                #     f.write("    and rsp, -16\n")
-                #     f.write("    call build_list\n")
-                #     f.write("    mov rsp, rbx\n")
-                #     variadic_args_count = 0
-                case _:
-                    raise Exception(f"Instruction {inst} is unimplemented")
+                    #     for arg, reg in zip(args, args_to_regs_map[1:]):
+                    #         f.write(emit_source_to_reg(arg, env.code_obj, reg))
+
+                    #     assert inst.arg1 is not None
+                    # case Operation.BUILD_LIST:
+                    #     f.write(f"    mov rdi, {variadic_args_count}\n")
+                    #     f.write("    mov rbx, rsp\n")
+                    #     f.write("    and rsp, -16\n")
+                    #     f.write("    call build_list\n")
+                    #     f.write("    mov rsp, rbx\n")
+                    #     variadic_args_count = 0
+                    case RaiseOperation(handler):
+                        f.write(f"    jmp .ET{handler}\n")
+                    case _:
+                        raise Exception(f"Instruction {inst} is unimplemented")
+
+        f.write(".ET0:")
+        f.write(
+            f"    add rsp, {(len(function.env.code_obj.co_varnames) * 8 + 15 & -16)}\n"
+        )
+        f.write("    pop rbx\n")
+        f.write("    pop rbp\n")
+
+        f.write("    add rsp, 8\n")
+        f.write("    ret\n")
+
         f.seek(0)
         self.functions_asm[function] = f.read()
 

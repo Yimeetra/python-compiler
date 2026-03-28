@@ -110,6 +110,14 @@ class CommentOperation:
 @dataclass
 class RaiseOperation:
     handler: int
+    exc: TypedSource
+    
+
+@dataclass
+class MatchExceptionOperation:
+    exc1: TypedSource
+    exc2: TypedSource
+    dest: TypedSource
 
 
 Operation = Union[
@@ -123,6 +131,7 @@ Operation = Union[
     GetItemOperation,
     CommentOperation,
     RaiseOperation,
+    MatchExceptionOperation
 ]
 
 

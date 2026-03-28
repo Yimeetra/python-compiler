@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include "none.h"
 #include "int.h"
+#include "type.h"
 
 NoneObj *_print(StrObj *string) {
     printf("%s", string->value);
@@ -16,6 +17,10 @@ IntObj *id(void *value) {
     IntObj *result = malloc(sizeof(IntObj));
     result->value = (int64_t) value;
     return result;
+}
+
+IntObj *match_exception(void *exc1, void *exc2) {
+    return type__eq__(type(exc1), type(exc2));
 }
 
 // "__add__"

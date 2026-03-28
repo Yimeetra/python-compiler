@@ -7,6 +7,9 @@ typedef enum {
     TYPE_LIST,
     TYPE_TUPLE,
     TYPE_TYPE,
+
+    TYPE_EXCEPTION,
+    TYPE_STOP_ITERATION,
     
     _TYPE_COUNT
 } BuiltinType;

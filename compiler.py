@@ -30,6 +30,7 @@ from ir import (
     GetItemOperation,
     CommentOperation,
     RaiseOperation,
+    MatchExceptionOperation,
     Frame,
 )
 
@@ -93,6 +94,8 @@ def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
             if reg != "rax":
                 return f"    mov {reg}, rax\n"
             return ""
+        case SourceType.GLOBAL:
+            return f"    lea {reg}, [{source.value}]\n"
         case _:
             raise Exception(f"Cannot load from {source}")
 
@@ -203,31 +206,47 @@ class Compiler:
         curr_frame = 0
         frames.append(Frame())
         exception_handlers: list[int] = [0]
+        saved_stack: list[Source] = []
 
-        def create_frame(frames: list[Frame], curr_frame: int) -> int:
+        def create_frame(
+            frames: list[Frame], curr_frame: int, handler: int, append: bool = True
+        ) -> int:
             if len(frames[curr_frame].instructions) != 0:
-                frames.append(Frame())
-                stack_copy = frames[curr_frame].stack.copy()
-                curr_frame = len(frames) - 1
-                frames[curr_frame].stack = stack_copy
+                frame = Frame(exception_handler=handler)
+                frame.stack = frames[curr_frame].stack.copy()
+                if append:
+                    frames.append(frame)
+                    return len(frames) - 1
+                else:
+                    frames = (
+                        frames[: curr_frame + 1] + [frame] + frames[curr_frame + 1 :]
+                    )
+                    return curr_frame
             return curr_frame
 
-        label_to_block_index = {}
+        label_to_frame_index: dict[str, int] = {}
 
         instructions.seek(0)
         for inst in instructions:
             label_name = jump_labels.get(inst.offset)
+
             if label_name:
-                curr_frame = create_frame(frames, curr_frame)
-                # label_to_block_index[label] = curr_block
+                curr_frame = create_frame(
+                    frames, curr_frame, handler=exception_handlers[-1]
+                )
+                frames[curr_frame].stack = saved_stack
+                saved_stack = []
+                label_to_frame_index[label_name] = curr_frame
                 frames[curr_frame].instructions.append(
                     ir.LabelOperation(Source(SourceType.LABEL, label_name))
                 )
-                label_to_block_index[label_name] = curr_frame
+                label_to_frame_index[label_name] = curr_frame
             for i, entry in enumerate(exception_table_enitries, 1):
                 if entry.start == inst.offset:
                     exception_handlers.append(i)
-                    curr_frame = create_frame(frames, curr_frame)
+                    curr_frame = create_frame(
+                        frames, curr_frame, handler=exception_handlers[-1]
+                    )
                     frames[curr_frame].instructions.append(
                         ir.LabelOperation(Source(SourceType.LABEL, f"ES{i}"))
                     )
@@ -235,19 +254,20 @@ class Compiler:
                     frames[curr_frame].instructions.append(
                         ir.LabelOperation(Source(SourceType.LABEL, f"EE{i}"))
                     )
-                    label_to_block_index[f"EE{i}"] = curr_frame
+                    label_to_frame_index[f"EE{i}"] = curr_frame
                 if entry.target == inst.offset:
                     frames[curr_frame].exception_handler = exception_handlers.pop()
                     prev_block = curr_frame
-                    curr_frame = create_frame(frames, curr_frame)
-                    frames[curr_frame].stack.append(
-                        Source(SourceType.CONST, "exception")
+                    curr_frame = create_frame(
+                        frames, curr_frame, handler=exception_handlers[-1]
                     )
+                    temp_var = f"t{next(var_iter)}"
+                    frames[curr_frame].stack.append(Source(SourceType.TEMP, temp_var))
                     frames[curr_frame].instructions.append(
                         ir.LabelOperation(Source(SourceType.LABEL, f"ET{i}"))
                     )
                     frames[prev_block].branches.add(curr_frame)
-                    label_to_block_index[f"ET{i}"] = curr_frame
+                    label_to_frame_index[f"ET{i}"] = curr_frame
 
             match inst.opname:
                 case "LOAD_CONST":
@@ -339,7 +359,11 @@ class Compiler:
                             TypedSource(var1),
                         )
                     )
-                    curr_frame = create_frame(frames, curr_frame)
+                    curr_frame = create_frame(
+                        frames, curr_frame, handler=exception_handlers[-1]
+                    )
+                    saved_stack = frames[curr_frame].stack.copy()
+
                 case "POP_TOP":
                     frames[curr_frame].stack.pop()
                 case "JUMP_BACKWARD":
@@ -348,14 +372,16 @@ class Compiler:
                             Source(SourceType.LABEL, jump_labels[inst.argval]),
                         )
                     )
-                    curr_frame = create_frame(frames, curr_frame)
+                    curr_frame = create_frame(
+                        frames, curr_frame, handler=exception_handlers[-1]
+                    )
                 case "JUMP_FORWARD":
                     frames[curr_frame].instructions.append(
                         ir.GotoOperation(
                             Source(SourceType.LABEL, jump_labels[inst.argval]),
                         )
                     )
-                    curr_frame = create_frame(frames, curr_frame)
+                    # curr_frame = create_frame(frames, curr_frame)
                 case "RETURN_CONST":
                     assert isinstance(inst.arg, int)
                     frames[curr_frame].instructions.append(
@@ -408,7 +434,8 @@ class Compiler:
                     frames[curr_frame].stack.append(temp)
                 case "POP_EXCEPT":
                     # blocks[curr_block][1].append(CommentOperation("POP_EXCEPT"))
-                    frames[curr_frame].stack.pop()
+                    # frames[curr_frame].stack.pop()
+                    pass
                 case "COPY":
                     if len(frames[curr_frame].stack) <= inst.arg:
                         frames[curr_frame].stack.append(Source(SourceType.CONST, "0"))
@@ -421,24 +448,43 @@ class Compiler:
                     # blocks[curr_block][1].append(CommentOperation("RERAISE"))
                 case "RAISE_VARARGS":
                     # blocks[curr_block][1].append(CommentOperation("RAISE"))
+                    if len(frames[curr_frame].stack) != 0:
+                        exc = frames[curr_frame].stack.pop()
+                    else:
+                        exc = Source(SourceType.GLOBAL, "Exception")
                     if len(exception_handlers) != 0:
                         frames[curr_frame].instructions.append(
-                            RaiseOperation(exception_handlers[-1])
+                            RaiseOperation(exception_handlers[-1], TypedSource(exc))
                         )
                     else:
-                        frames[curr_frame].instructions.append(RaiseOperation(0))
-
+                        frames[curr_frame].instructions.append(
+                            RaiseOperation(0, TypedSource(exc))
+                        )
+                case "CHECK_EXC_MATCH":
+                    exc1 = frames[curr_frame].stack.pop()
+                    exc2 = frames[curr_frame].stack.pop()
+                    frames[curr_frame].instructions.append(
+                        MatchExceptionOperation(
+                            TypedSource(exc1),
+                            TypedSource(exc2),
+                            TypedSource(Source(SourceType.TEMP, temp_var)),
+                        )
+                    )
+                    temp_var = f"t{next(var_iter)}"
+                    frames[curr_frame].stack.append(Source(SourceType.TEMP, temp_var))
                 case _:
                     raise Exception(f"Instruction {inst.opname} is unimplemented")
 
         for i, frame in enumerate(frames):
+            if len(frame.instructions) == 0:
+                continue
             match frame.instructions[-1]:
                 case GotoOperation(label):
                     assert isinstance(label.value, str)
-                    frame.branches.add(label_to_block_index[label.value])
+                    frame.branches.add(label_to_frame_index[label.value])
                 case GotoIfFalseOperation(label, cond):
                     assert isinstance(label.value, str)
-                    frame.branches.add(label_to_block_index[label.value])
+                    frame.branches.add(label_to_frame_index[label.value])
                     frame.branches.add(i + 1)
                 case ReturnOperation(_):
                     pass
@@ -550,7 +596,9 @@ class Compiler:
                             (arg1_type, arg2_type)
                         )
 
-                        return_type = methods_of_type[arg1_type][method].get_return_type()
+                        return_type = methods_of_type[arg1_type][
+                            method
+                        ].get_return_type()
 
                         if dest.source.source_type == SourceType.LOCAL:
                             assert isinstance(dest.source.value, int)
@@ -611,6 +659,8 @@ class Compiler:
                             function.env.temp_type = src.value_type.sub_types[0]
                     case RaiseOperation(_):
                         pass
+                    case MatchExceptionOperation(exc1, exc2, dest):
+                        pass  # TODO: resolve types
                     case _:
                         raise Exception(f"Instruction {inst} is unimplemented")
 
@@ -628,10 +678,12 @@ class Compiler:
             f.write("extern _print\n")
             f.write("extern id\n")
             f.write("extern build_list\n")
-            
+            f.write("extern match_exception\n")
+            f.write("extern StopIteration\n")
+            f.write("extern Exception\n")
+
             for function in builtin_functions:
                 f.write(f"extern {function}\n")
-                
 
             for type, methods in methods_of_type.items():
                 for method_name, method in methods.items():
@@ -680,8 +732,8 @@ class Compiler:
             main_function = self.compile_code_obj(main_code)
             self.annotate_function_types(main_function, None)
 
-            for function in compiler.functions:
-                self.compile_function_nasm(function)
+            for func in compiler.functions:
+                self.compile_function_nasm(func)
 
             for _, asm in self.functions_asm.items():
                 f.write(asm)
@@ -844,8 +896,22 @@ class Compiler:
                     #     f.write("    call build_list\n")
                     #     f.write("    mov rsp, rbx\n")
                     #     variadic_args_count = 0
-                    case RaiseOperation(handler):
+                    case RaiseOperation(handler, exc):
+                        f.write(emit_source_to_reg(exc.source, function.env.code_obj))
                         f.write(f"    jmp .ET{handler}\n")
+                    case MatchExceptionOperation(exc1, exc2, dest):
+                        f.write(
+                            emit_source_to_reg(
+                                exc1.source, function.env.code_obj, args_to_regs_map[0]
+                            )
+                        )
+                        f.write(
+                            emit_source_to_reg(
+                                exc2.source, function.env.code_obj, args_to_regs_map[1]
+                            )
+                        )
+                        f.write(emit_call("match_exception", frame.exception_handler))
+                        f.write(emit_reg_to_source(dest.source, function.env.code_obj))
                     case _:
                         raise Exception(f"Instruction {inst} is unimplemented")
 

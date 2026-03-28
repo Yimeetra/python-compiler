@@ -13,6 +13,9 @@ class BuiltinTypesEnum(Enum):
     tuple = auto()
 
     type = auto()
+    
+    exception = auto()
+    stop_iteration = auto(),
 
     unknown = auto()
     any = auto()

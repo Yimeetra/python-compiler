@@ -25,3 +25,21 @@ StrObj *type__str__(TypeObj *self) {
     sprintf(result->value, "Type(%s)", type_names[self->type]);
     return result;
 }
+
+typedef struct {
+    ObjectHeader header;
+} StopIterationObj;
+
+StopIterationObj _StopIteration = {
+    .header = TYPE_STOP_ITERATION,
+};
+StopIterationObj *StopIteration = &_StopIteration;
+
+typedef struct {
+    ObjectHeader header;
+} ExceptionObj;
+
+ExceptionObj _Exception = {
+    .header = TYPE_EXCEPTION,
+};
+ExceptionObj *Exception = &_Exception;

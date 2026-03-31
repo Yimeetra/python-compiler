@@ -19,8 +19,30 @@ IntObj *id(void *value) {
     return result;
 }
 
-IntObj *match_exception(void *exc1, void *exc2) {
-    return type__eq__(type(exc1), type(exc2));
+IntObj *match_exception(TypeObj *exc, ObjectHeader *raised) {
+    TypeObj *raised_type;
+    IntObj *result = malloc(sizeof(IntObj));
+    if (raised->type_id != TYPE_TYPE) {
+        raised_type = type(raised);
+    } else {
+        raised_type = (TypeObj *) raised;
+    }
+
+
+    if (raised_type->type_id == exc->type_id) {
+
+        result->value = 1;
+        return result;
+    }
+
+    for (int i = 0; i < raised_type->parents_amount; i++) {
+        if (raised_type->parent_types[i] == exc->type_id) {
+            result->value = 1;
+            return result;
+        }
+    }
+    result->value = 0;
+    return result;
 }
 
 // "__add__"

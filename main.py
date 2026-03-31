@@ -15,7 +15,8 @@ def main() -> None:
             n = foo(n)
             print(n)
     except StopIteration:
+        print("Stop Iteration")
+    except Exception:
         print("Exception")
-    
 
 main()

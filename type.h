@@ -7,7 +7,9 @@
 
 typedef struct {
     ObjectHeader header;
-    int type;
+    uint64_t type_id;
+    uint64_t parents_amount;
+    uint64_t parent_types[0];
 } TypeObj;
 
 TypeObj *type(void *object);

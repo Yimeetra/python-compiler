@@ -95,7 +95,7 @@ def emit_source_to_reg(source: Source, code_obj: CodeType, reg: str = "rax"):
                 return f"    mov {reg}, rax\n"
             return ""
         case SourceType.GLOBAL:
-            return f"    lea {reg}, [{source.value}]\n"
+            return f"    mov {reg}, [{source.value}]\n"
         case _:
             raise Exception(f"Cannot load from {source}")
 
@@ -206,7 +206,6 @@ class Compiler:
         curr_frame = 0
         frames.append(Frame())
         exception_handlers: list[int] = [0]
-        saved_stack: list[Source] = []
 
         def create_frame(
             frames: list[Frame], curr_frame: int, handler: int, append: bool = True
@@ -225,6 +224,7 @@ class Compiler:
             return curr_frame
 
         label_to_frame_index: dict[str, int] = {}
+        label_saved_stack: dict[str, list[Source]] = {}
 
         instructions.seek(0)
         for inst in instructions:
@@ -234,8 +234,8 @@ class Compiler:
                 curr_frame = create_frame(
                     frames, curr_frame, handler=exception_handlers[-1]
                 )
-                frames[curr_frame].stack = saved_stack
-                saved_stack = []
+                frames[curr_frame].stack = label_saved_stack.get(label_name, [])
+                label_saved_stack[label_name] = frames[curr_frame].stack
                 label_to_frame_index[label_name] = curr_frame
                 frames[curr_frame].instructions.append(
                     ir.LabelOperation(Source(SourceType.LABEL, label_name))
@@ -362,7 +362,7 @@ class Compiler:
                     curr_frame = create_frame(
                         frames, curr_frame, handler=exception_handlers[-1]
                     )
-                    saved_stack = frames[curr_frame].stack.copy()
+                    label_saved_stack[jump_labels[inst.argval]] = frames[curr_frame].stack.copy()
 
                 case "POP_TOP":
                     frames[curr_frame].stack.pop()
@@ -462,7 +462,7 @@ class Compiler:
                         )
                 case "CHECK_EXC_MATCH":
                     exc1 = frames[curr_frame].stack.pop()
-                    exc2 = frames[curr_frame].stack.pop()
+                    exc2 = frames[curr_frame].stack[-1]
                     frames[curr_frame].instructions.append(
                         MatchExceptionOperation(
                             TypedSource(exc1),
@@ -821,6 +821,7 @@ class Compiler:
                         f.write(emit_source_to_reg(cond.source, function.env.code_obj))
                         f.write("    mov rax, [rax+8]\n")
                         f.write("    test rax, rax\n")
+                        f.write("    mov rax, rbx\n")
                         f.write(f"    jz .{label.value}\n")
                     case ReturnOperation(value):
                         f.write(emit_source_to_reg(value.source, function.env.code_obj))
@@ -900,6 +901,7 @@ class Compiler:
                         f.write(emit_source_to_reg(exc.source, function.env.code_obj))
                         f.write(f"    jmp .ET{handler}\n")
                     case MatchExceptionOperation(exc1, exc2, dest):
+                        f.write("    mov rbx, rax\n")
                         f.write(
                             emit_source_to_reg(
                                 exc1.source, function.env.code_obj, args_to_regs_map[0]
